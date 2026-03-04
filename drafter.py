@@ -17,20 +17,23 @@ def build_prompt(lead):
         "You are writing a cold email on behalf of " + COMPANY_NAME + ",",
         "a company described as: " + COMPANY_PITCH,
         "",
-        'The target company "' + lead["company_name"] + '" is currently hiring for:',
-        '"' + lead["job_title"] + '"',
+        "TARGET COMPANY: " + lead["company_name"],
+        "WEBSITE: " + str(lead.get("company_website", "")),
+        "HIRING FOR: " + lead["job_title"],
+        "LOCATION: " + str(lead.get("job_location", "")),
         "",
-        "Here is context from their job posting:",
-        '"' + lead.get("job_description", "AI-related role") + '"',
+        "JOB DESCRIPTION:",
+        str(lead.get("job_description", "AI-related role"))[:800],
         "",
-        "The email is going to " + lead["contact_name"] + ", who is the " + lead["contact_title"] + ".",
+        "SENDING TO: " + str(lead.get("decision_maker_name", "")),
+        "THEIR ROLE: " + str(lead.get("decision_maker_title", "")),
         "",
         "Write a short, personalized cold email (under 150 words) that:",
         "1. Acknowledges they are actively building their AI team",
-        "2. Offers our AI development services as a faster alternative to hiring",
-        "3. Mentions specific AI capabilities relevant to their job posting",
+        "2. References something specific from the job description",
+        "3. Offers our AI development services as a faster alternative",
         "4. Ends with a soft call-to-action to book a 15-min call",
-        "5. Sounds like a real human wrote it, not a template",
+        "5. Sounds like a real human, not a template",
         "",
         "Also write:",
         "- A subject line (under 50 characters)",
@@ -43,7 +46,7 @@ def build_prompt(lead):
 
 def draft_email(lead):
     if not GROQ_API_KEY:
-        print("ERROR: GROQ_API_KEY not set in .env")
+        print("ERROR: GROQ_API_KEY not set")
         return None
 
     client = Groq(api_key=GROQ_API_KEY)
@@ -60,14 +63,12 @@ def draft_email(lead):
         )
 
         raw = response.choices[0].message.content.strip()
-
-        # Strip markdown fences if present
-        lines = raw.split("\n")
-        if lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        raw = "\n".join(lines).strip()
+        lines_raw = raw.split("\n")
+        if lines_raw[0].startswith("```"):
+            lines_raw = lines_raw[1:]
+        if lines_raw and lines_raw[-1].strip() == "```":
+            lines_raw = lines_raw[:-1]
+        raw = "\n".join(lines_raw).strip()
 
         result = json.loads(raw)
         return result
@@ -76,28 +77,27 @@ def draft_email(lead):
         print("    WARNING: LLM returned invalid JSON.")
         return None
     except Exception as e:
-        print("    ERROR: Groq API call failed: " + str(e))
+        print("    ERROR: Groq API failed: " + str(e))
         return None
 
 
 def run_drafter():
     print("")
-    print("=" * 50)
+    print("=" * 60)
     print("  DRAFTER: Generating personalized cold emails")
-    print("=" * 50)
+    print("=" * 60)
 
     leads = get_leads_by_status("enriched")
     if not leads:
         print("No enriched leads to draft for.")
         return 0
 
-    count = len(leads)
-    print("Found " + str(count) + " leads to draft emails for.")
+    print("Found " + str(len(leads)) + " leads to draft emails for.")
     drafted = 0
 
     for lead in leads:
         company = lead["company_name"]
-        contact = lead["contact_name"]
+        contact = str(lead.get("decision_maker_name", "Decision Maker"))
         print("  Drafting for " + contact + " at " + company + "...")
 
         result = draft_email(lead)
@@ -111,9 +111,9 @@ def run_drafter():
                 status="drafted",
             )
             drafted += 1
-            print("    DONE: Subject: " + result.get("subject", "N/A"))
+            print("    DONE: " + result.get("subject", "N/A"))
         else:
-            print("    FAILED: Could not generate draft.")
+            print("    FAILED")
 
     print("Drafter done: " + str(drafted) + " emails drafted.")
     get_stats()

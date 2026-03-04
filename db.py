@@ -1,7 +1,3 @@
-"""
-SQLite database setup and helper functions.
-Stores all leads with status tracking through the pipeline.
-"""
 import sqlite3
 import os
 from datetime import datetime
@@ -22,15 +18,19 @@ def init_db():
         CREATE TABLE IF NOT EXISTS leads (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             company_name TEXT NOT NULL,
+            company_website TEXT,
             company_domain TEXT,
+            company_phone TEXT,
+            company_contact_email TEXT,
             job_title TEXT,
             job_description TEXT,
             job_url TEXT,
             job_location TEXT,
-            contact_name TEXT,
-            contact_title TEXT,
-            contact_email TEXT,
-            linkedin_url TEXT,
+            job_posted_date TEXT,
+            decision_maker_name TEXT,
+            decision_maker_title TEXT,
+            decision_maker_email TEXT,
+            decision_maker_linkedin TEXT,
             draft_subject TEXT,
             draft_email TEXT,
             draft_linkedin_note TEXT,
@@ -48,20 +48,21 @@ def init_db():
 
     conn.commit()
     conn.close()
-    print(f"Database ready: {DB_PATH}")
+    print("Database ready: " + DB_PATH)
 
 
 def insert_lead(company_name, job_title, job_description="",
-                job_url="", job_location="", company_domain=""):
+                job_url="", job_location="", company_domain="",
+                job_posted_date=""):
     conn = get_connection()
     try:
         conn.execute(
             """INSERT INTO leads
                (company_name, company_domain, job_title, job_description,
-                job_url, job_location, status)
-               VALUES (?, ?, ?, ?, ?, ?, 'scraped')""",
+                job_url, job_location, job_posted_date, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'scraped')""",
             (company_name, company_domain, job_title,
-             job_description, job_url, job_location)
+             job_description, job_url, job_location, job_posted_date)
         )
         conn.commit()
         return True
@@ -84,10 +85,10 @@ def update_lead(lead_id, **fields):
     if not fields:
         return
     fields["updated_at"] = datetime.now().isoformat()
-    set_clause = ", ".join(f"{k} = ?" for k in fields)
+    set_clause = ", ".join(k + " = ?" for k in fields)
     values = list(fields.values()) + [lead_id]
     conn = get_connection()
-    conn.execute(f"UPDATE leads SET {set_clause} WHERE id = ?", values)
+    conn.execute("UPDATE leads SET " + set_clause + " WHERE id = ?", values)
     conn.commit()
     conn.close()
 
@@ -108,13 +109,15 @@ def get_stats():
     ).fetchall()
     conn.close()
 
-    print("\n--- Pipeline Stats ---")
+    print("")
+    print("--- Pipeline Stats ---")
     total = 0
     for r in rows:
-        print(f"  {r['status']:12s} : {r['count']}")
+        print("  " + r["status"].ljust(16) + ": " + str(r["count"]))
         total += r["count"]
-    print(f"  {'TOTAL':12s} : {total}")
-    print("----------------------\n")
+    print("  " + "TOTAL".ljust(16) + ": " + str(total))
+    print("----------------------")
+    print("")
     return {r["status"]: r["count"] for r in rows}
 
 
