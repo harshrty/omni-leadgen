@@ -78,8 +78,9 @@ MANDATORY RULES — follow every one without exception:
 7. CLOSING: Close with "Warm regards," followed by your name and title.
 8. LENGTH: Strictly 230 to 250 words. Count carefully. Not 229, not 251.
 9. SUBJECT LINE: Must be under 60 characters. Make it specific to {company} or their {job_title} role — curiosity-driven and intriguing, not salesy. Think: a sharp observation about their situation, not a pitch.
-   Good examples: "A thought on {company}'s AI build" | "{company}'s AI hiring — a perspective" | "Re: your {job_title} search"
+   Good examples: "A thought on {company}'s AI build" | "{company}'s AI hiring - a perspective" | "Re: your {job_title} search"
    AVOID these spam/promotion trigger words in subject: free, guaranteed, limited time, act now, offer, deal, click, earn, discount, prize, winner, congratulations, urgent, no cost, 100%, !!!, $$$
+10. PUNCTUATION: Do NOT use em-dashes (--) or en-dashes. Use plain hyphens (-) instead. Use straight quotes only. Keep punctuation simple and natural.
 
 Respond ONLY in this exact format:
 SUBJECT: <subject line>
@@ -114,13 +115,27 @@ MANDATORY RULES — follow every one without exception:
 7. CLOSING: Close with "Warm regards," followed by your name and title.
 8. LENGTH: Strictly 230 to 250 words. Count carefully. Not 229, not 251.
 9. SUBJECT LINE: Must be under 60 characters. Make it specific to {company} or their {job_title} role — curiosity-driven and intriguing, not salesy. Think: a sharp observation about their situation, not a pitch.
-   Good examples: "A thought on {company}'s AI build" | "{company}'s AI hiring — a perspective" | "Re: your {job_title} search"
+   Good examples: "A thought on {company}'s AI build" | "{company}'s AI hiring - a perspective" | "Re: your {job_title} search"
    AVOID these spam/promotion trigger words in subject: free, guaranteed, limited time, act now, offer, deal, click, earn, discount, prize, winner, congratulations, urgent, no cost, 100%, !!!, $$$
+10. PUNCTUATION: Do NOT use em-dashes (--) or en-dashes. Use plain hyphens (-) instead. Use straight quotes only. Keep punctuation simple and natural.
 
 Respond ONLY in this exact format:
 SUBJECT: <subject line>
 EMAIL:
 <email body>"""
+
+
+def sanitize_text(text: str) -> str:
+    """Replace AI-telltale punctuation with plain equivalents."""
+    # Em-dash and en-dash -> plain hyphen (with spaces preserved)
+    text = text.replace("\u2014", "-")   # em-dash
+    text = text.replace("\u2013", "-")   # en-dash
+    # Smart quotes -> straight quotes
+    text = text.replace("\u2018", "'").replace("\u2019", "'")   # left/right single
+    text = text.replace("\u201c", '"').replace("\u201d", '"')   # left/right double
+    # Ellipsis character -> three dots
+    text = text.replace("\u2026", "...")
+    return text
 
 
 def get_salary_pitch(salary_raw):
@@ -206,7 +221,7 @@ def generate_email(client, lead):
             body_lines.append(line)
 
     email_body = "\n".join(body_lines).strip()
-    return subject, email_body
+    return sanitize_text(subject), sanitize_text(email_body)
 
 
 def run():

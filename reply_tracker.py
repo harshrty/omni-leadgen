@@ -122,7 +122,7 @@ def start_background_thread():
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", encoding="utf-8")
     logger.info("Running one-shot inbox check...")
     check_inbox_once()
     logger.info("Done.")
