@@ -1,7 +1,28 @@
+import json
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def _load_company_config() -> dict:
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "company_config.json")
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def _parse_list(env_val: str, default: list) -> list:
+    if env_val:
+        return [x.strip() for x in env_val.split("|") if x.strip()]
+    return default
+
+
+_cc = _load_company_config()
 
 # --- API Keys ---
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
@@ -27,52 +48,27 @@ single_key = os.getenv("HUNTER_API_KEY", "")
 if single_key and single_key not in HUNTER_API_KEYS:
     HUNTER_API_KEYS.insert(0, single_key)
 
+# --- Company Identity (loaded from company_config.json, env fallback) ---
+COMPANY_NAME    = _cc.get("company_name")    or os.getenv("COMPANY_NAME", "")
+FOUNDER_NAME    = _cc.get("founder_name")    or os.getenv("FOUNDER_NAME", "")
+FOUNDER_TITLE   = _cc.get("founder_title")   or os.getenv("FOUNDER_TITLE", "Founder & CEO")
+COMPANY_WEBSITE = _cc.get("company_website") or os.getenv("COMPANY_WEBSITE", "")
+COMPANY_PITCH   = _cc.get("company_pitch")   or os.getenv("COMPANY_PITCH", "")
+CALENDAR_URL    = _cc.get("calendar_url")    or os.getenv("CALENDAR_URL", "")
+
 # --- Scraper Settings ---
-SEARCH_QUERIES = [
-    "AI Developer",
-    "AI Engineer",
-    "Machine Learning Engineer",
-    "AI Software Engineer",
-    "GenAI Developer",
-    "LLM Engineer",
-    "Deep Learning Engineer",
-    "NLP Engineer",
-    "Computer Vision Engineer",
-    "AI Research Engineer",
-    "MLOps Engineer",
-    "Full Stack AI Developer",
+_DEFAULT_QUERIES = [
+    "AI Developer", "AI Engineer", "Machine Learning Engineer",
+    "AI Software Engineer", "GenAI Developer", "LLM Engineer",
+    "Deep Learning Engineer", "NLP Engineer", "Computer Vision Engineer",
+    "AI Research Engineer", "MLOps Engineer", "Full Stack AI Developer",
 ]
-
-SEARCH_LOCATIONS = [
-    "United States",
-    "United Kingdom",
-    "Germany",
-    "France",
-    "Netherlands",
-    "Ireland",
-    "Switzerland",
-    "Sweden",
-    "Spain",
-    "Italy",
-    "Poland",
-    "Denmark",
-    "Belgium",
-    "Austria",
-    "Norway",
-    "Finland",
-    "Portugal",
+_DEFAULT_LOCATIONS = [
+    "United States", "United Kingdom", "Germany", "France", "Netherlands",
+    "Ireland", "Switzerland", "Sweden", "Spain", "Italy", "Poland",
+    "Denmark", "Belgium", "Austria", "Norway", "Finland", "Portugal",
 ]
-
-TIME_FILTER = "r86400"
-MAX_PAGES_PER_QUERY = 2
-MIN_DELAY = 4
-MAX_DELAY = 10
-MAX_LEADS_PER_RUN = 500
-
-# --- Enricher Settings ---
-GROQ_MODEL = "llama-3.3-70b-versatile"
-
-TARGET_TITLES = [
+_DEFAULT_TITLES = [
     "CTO", "Chief Technology Officer",
     "CEO", "Chief Executive Officer",
     "Founder", "Co-Founder",
@@ -82,15 +78,22 @@ TARGET_TITLES = [
     "Chief AI Officer", "Head of Machine Learning",
 ]
 
-COMPANY_NAME = "Omnithrive Technologies"
-COMPANY_PITCH = (
-    "Omnithrive Technologies builds and deploys custom AI solutions, "
-    "including full-stack AI applications, data pipelines, LLM integrations, "
-    "and end-to-end machine learning systems. We help companies ship AI "
-    "products in weeks instead of spending months hiring."
-)
+SEARCH_QUERIES   = _cc.get("search_queries")   or _parse_list(os.getenv("SEARCH_QUERIES"),   _DEFAULT_QUERIES)
+SEARCH_LOCATIONS = _cc.get("search_locations") or _parse_list(os.getenv("SEARCH_LOCATIONS"), _DEFAULT_LOCATIONS)
+TARGET_TITLES    = _cc.get("target_titles")    or _parse_list(os.getenv("TARGET_TITLES"),    _DEFAULT_TITLES)
+
+TIME_FILTER = "r259200"  # 72 hours (was r86400 = 24h)
+MAX_PAGES_PER_QUERY = 2
+MIN_DELAY = 2
+MAX_DELAY = 5
+MAX_LEADS_PER_RUN = 500
+
+# --- Enricher Settings ---
+GROQ_MODEL = "llama-3.3-70b-versatile"
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "leads.db")
+
+# Always local SQLite — no remote database
 
 # --- SMTP / Email Sending ---
 SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
@@ -98,13 +101,17 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASS = os.getenv("SMTP_PASS", "")
 FROM_EMAIL = os.getenv("FROM_EMAIL", SMTP_USER)
-FROM_NAME = os.getenv("FROM_NAME", "Omnithrive")
+FROM_NAME = os.getenv("FROM_NAME", COMPANY_NAME or FOUNDER_NAME or "")
 
 # --- IMAP / Reply Tracking ---
 IMAP_HOST = os.getenv("IMAP_HOST", "imap.gmail.com")
 IMAP_PORT = int(os.getenv("IMAP_PORT", "993"))
 IMAP_USER = os.getenv("IMAP_USER", SMTP_USER)
 IMAP_PASS = os.getenv("IMAP_PASS", SMTP_PASS)
+
+# --- LinkedIn Scraping Credentials (dedicated/throwaway account recommended) ---
+LINKEDIN_EMAIL = os.getenv("LINKEDIN_EMAIL", "")
+LINKEDIN_PASS  = os.getenv("LINKEDIN_PASS", "")
 
 # --- Dashboard Server ---
 SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Omnithrive — Lead Pipeline</title>
+  <title>Lead Pipeline</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -67,6 +67,69 @@
     #bulk-send-btn { background: #16a34a; }
     #bulk-send-btn:hover { background: #15803d; }
     #bulk-send-btn:disabled { background: #374151; cursor: default; }
+    #setup-btn { background: #0e7490; color: #fff; border: none; border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 13px; font-weight: 600; transition: background .15s; }
+    #setup-btn:hover { background: #0c6480; }
+
+    /* Setup modal */
+    #setup-modal-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,.65); z-index: 940;
+      align-items: flex-start; justify-content: center;
+      overflow-y: auto; padding: 40px 16px;
+    }
+    #setup-modal-overlay.open { display: flex; }
+    #setup-modal {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 28px; max-width: 580px;
+      width: 100%; box-shadow: var(--shadow); position: relative;
+    }
+    #setup-modal h2 { font-size: 17px; font-weight: 700; margin-bottom: 4px; }
+    #setup-modal .sub { color: var(--text-muted); font-size: 12px; margin-bottom: 22px; }
+    #setup-modal-close {
+      position: absolute; top: 16px; right: 16px;
+      background: none; border: none; color: var(--text-muted);
+      font-size: 22px; cursor: pointer; line-height: 1;
+    }
+    #setup-modal-close:hover { color: var(--text); }
+    .setup-section { margin-bottom: 24px; }
+    .setup-section-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .8px; color: var(--text-muted); margin-bottom: 12px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+    #setup-file-input {
+      display: block; width: 100%; background: var(--bg);
+      border: 2px dashed var(--border); border-radius: 8px;
+      color: var(--text); padding: 18px; font-size: 13px;
+      cursor: pointer; margin-bottom: 10px; text-align: center;
+    }
+    #setup-file-input:hover { border-color: var(--accent); }
+    .setup-upload-actions { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+    #setup-upload-btn {
+      background: var(--accent); color: #fff; border: none;
+      border-radius: 6px; padding: 8px 16px; font-size: 13px;
+      font-weight: 600; cursor: pointer;
+    }
+    #setup-upload-btn:disabled { background: #374151; cursor: default; }
+    #setup-sample-btn {
+      background: transparent; color: var(--text-muted); border: 1px solid var(--border);
+      border-radius: 6px; padding: 8px 16px; font-size: 13px; cursor: pointer;
+    }
+    #setup-sample-btn:hover { border-color: var(--accent); color: var(--text); }
+    #setup-upload-status { font-size: 12px; color: var(--text-muted); min-height: 18px; margin-bottom: 18px; }
+    .setup-field { margin-bottom: 14px; }
+    .setup-label { font-size: 12px; color: var(--text-muted); margin-bottom: 4px; font-weight: 600; }
+    .setup-input {
+      width: 100%; background: var(--bg); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text); padding: 8px 10px;
+      font-size: 13px; outline: none; font-family: inherit;
+    }
+    .setup-input:focus { border-color: var(--accent); }
+    textarea.setup-input { resize: vertical; min-height: 70px; }
+    .setup-save-row { display: flex; gap: 10px; align-items: center; margin-top: 8px; }
+    #setup-save-btn {
+      background: #16a34a; color: #fff; border: none;
+      border-radius: 6px; padding: 9px 22px; font-size: 13px;
+      font-weight: 600; cursor: pointer;
+    }
+    #setup-save-btn:hover { background: #15803d; }
+    #setup-save-status { font-size: 12px; color: var(--text-muted); }
 
     /* Bulk send modal */
     #bulk-modal-overlay {
@@ -322,6 +385,150 @@
     #modal-send-btn:hover { background: var(--accent-hover); }
     #modal-send-btn:disabled { opacity: .45; cursor: default; }
 
+    /* Edit button */
+    .edit-btn {
+      background: transparent;
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all .15s;
+      white-space: nowrap;
+      margin-top: 4px;
+    }
+    .edit-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* Edit modal */
+    #edit-modal-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,.65); z-index: 920;
+      align-items: center; justify-content: center;
+    }
+    #edit-modal-overlay.open { display: flex; }
+    #edit-modal {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 28px; max-width: 560px;
+      width: 90%; box-shadow: var(--shadow); position: relative;
+      max-height: 85vh; overflow-y: auto;
+    }
+    #edit-modal h2 { font-size: 16px; margin-bottom: 18px; }
+    #edit-modal-close {
+      position: absolute; top: 16px; right: 16px;
+      background: none; border: none; color: var(--text-muted);
+      font-size: 20px; cursor: pointer; line-height: 1;
+    }
+    #edit-modal-close:hover { color: var(--text); }
+    .edit-field { margin-bottom: 14px; }
+    .edit-label { font-size: 11px; text-transform: uppercase; letter-spacing: .7px; color: var(--text-muted); margin-bottom: 5px; }
+    .edit-input {
+      width: 100%; background: var(--bg); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text); padding: 8px 10px;
+      font-size: 13px; outline: none; font-family: inherit;
+    }
+    .edit-input:focus { border-color: var(--accent); }
+    .edit-actions { display: flex; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
+    .edit-actions button {
+      border: none; border-radius: 6px; padding: 8px 18px;
+      font-size: 13px; font-weight: 600; cursor: pointer; color: #fff;
+    }
+    #edit-save-btn { background: var(--border); color: var(--text); }
+    #edit-save-btn:hover { background: #374151; }
+    #edit-redraft-btn { background: var(--accent); }
+    #edit-redraft-btn:hover { background: var(--accent-hover); }
+    #edit-redraft-btn:disabled { background: #374151; cursor: default; }
+    #edit-status { font-size: 12px; color: var(--text-muted); margin-top: 10px; min-height: 18px; }
+
+    /* Add DM button */
+    .add-dm-btn {
+      background: transparent;
+      color: var(--text-muted);
+      border: 1px dashed var(--border);
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all .15s;
+      white-space: nowrap;
+      margin-top: 4px;
+      display: block;
+    }
+    .add-dm-btn:hover { border-color: var(--green); color: var(--green); }
+
+    /* Add DM modal */
+    #adddm-modal-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,.65); z-index: 930;
+      align-items: center; justify-content: center;
+    }
+    #adddm-modal-overlay.open { display: flex; }
+    #adddm-modal {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 28px; max-width: 460px;
+      width: 90%; box-shadow: var(--shadow); position: relative;
+    }
+    #adddm-modal h2 { font-size: 16px; margin-bottom: 6px; }
+    #adddm-modal .sub { color: var(--text-muted); font-size: 12px; margin-bottom: 18px; }
+    #adddm-modal-close {
+      position: absolute; top: 16px; right: 16px;
+      background: none; border: none; color: var(--text-muted);
+      font-size: 20px; cursor: pointer; line-height: 1;
+    }
+    #adddm-modal-close:hover { color: var(--text); }
+    #adddm-add-btn { background: #16a34a; }
+    #adddm-add-btn:hover { background: #15803d; }
+    #adddm-add-btn:disabled { background: #374151; cursor: default; }
+    #adddm-status { font-size: 12px; color: var(--text-muted); margin-top: 10px; min-height: 18px; }
+
+    /* Company size badges */
+    .size-badge {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .4px;
+      padding: 2px 7px;
+      border-radius: 20px;
+      margin-left: 6px;
+      vertical-align: middle;
+    }
+    .size-small { background: rgba(251,191,36,.18); color: #fbbf24; border: 1px solid rgba(251,191,36,.3); }
+    .size-mid   { background: rgba(52,211,153,.18);  color: #34d399; border: 1px solid rgba(52,211,153,.3); }
+
+    /* Classify button */
+    #classify-btn {
+      background: #7c3aed;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 6px 14px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      transition: background .15s;
+    }
+    #classify-btn:hover { background: #6d28d9; }
+    #classify-btn:disabled { background: #374151; cursor: default; }
+
+    /* Delete button */
+    .delete-btn {
+      background: transparent;
+      color: var(--red);
+      border: 1px solid rgba(239,68,68,.35);
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all .15s;
+      white-space: nowrap;
+      margin-top: 4px;
+      display: block;
+    }
+    .delete-btn:hover { background: rgba(239,68,68,.12); border-color: var(--red); }
+
     /* Empty state */
     .empty-row td {
       text-align: center;
@@ -341,9 +548,11 @@
 <body>
 
 <header>
-  <h1>Omni<span>thrive</span> Lead Pipeline</h1>
+  <h1 id="header-title">Lead Pipeline</h1>
   <div class="header-right">
     <span id="last-updated"></span>
+    <button id="setup-btn" onclick="openSetupModal()">&#x2699; Setup</button>
+    <button id="classify-btn" onclick="startClassify()">&#x2605; Classify Sizes</button>
     <button id="bulk-send-btn" onclick="openBulkModal()">Bulk Send</button>
     <button id="refresh-btn" onclick="loadAll()">Refresh</button>
   </div>
@@ -444,6 +653,99 @@
   </div>
 </div>
 
+<!-- Add 2nd DM Modal -->
+<div id="adddm-modal-overlay" onclick="closeAddDmModal(event)">
+  <div id="adddm-modal">
+    <button id="adddm-modal-close" onclick="closeAddDmModal()">&times;</button>
+    <h2 id="adddm-modal-title">Add 2nd Decision Maker</h2>
+    <p class="sub">A new lead row will be created and auto-drafted for this contact.</p>
+    <div class="edit-field">
+      <div class="edit-label">Name</div>
+      <input class="edit-input" id="adddm-name" type="text" placeholder="e.g. Jane Doe" />
+    </div>
+    <div class="edit-field">
+      <div class="edit-label">Title</div>
+      <input class="edit-input" id="adddm-title" type="text" placeholder="e.g. VP Engineering" />
+    </div>
+    <div class="edit-field">
+      <div class="edit-label">Email *</div>
+      <input class="edit-input" id="adddm-email" type="email" placeholder="e.g. jane@company.com" />
+    </div>
+    <div class="edit-actions">
+      <button id="adddm-add-btn" onclick="submitAddDm()">Clone &amp; Draft Email</button>
+    </div>
+    <div id="adddm-status"></div>
+  </div>
+</div>
+
+<!-- Edit Modal -->
+<div id="edit-modal-overlay" onclick="closeEditModal(event)">
+  <div id="edit-modal">
+    <button id="edit-modal-close" onclick="closeEditModal()">&times;</button>
+    <h2 id="edit-modal-title">Edit Lead</h2>
+    <div class="edit-field">
+      <div class="edit-label">Decision Maker Name</div>
+      <input class="edit-input" id="edit-dm-name" type="text" placeholder="e.g. John Smith" />
+    </div>
+    <div class="edit-field">
+      <div class="edit-label">Decision Maker Title</div>
+      <input class="edit-input" id="edit-dm-title" type="text" placeholder="e.g. CTO" />
+    </div>
+    <div class="edit-field">
+      <div class="edit-label">Decision Maker Email</div>
+      <input class="edit-input" id="edit-dm-email" type="email" placeholder="e.g. john@company.com" />
+    </div>
+    <div class="edit-field">
+      <div class="edit-label">Industry</div>
+      <input class="edit-input" id="edit-industry" type="text" placeholder="e.g. SaaS, Healthcare" />
+    </div>
+    <div class="edit-field">
+      <div class="edit-label">Company Description</div>
+      <textarea class="edit-input" id="edit-description" rows="3" placeholder="What does this company do?"></textarea>
+    </div>
+    <div class="edit-actions">
+      <button id="edit-save-btn" onclick="saveEdit()">Save Only</button>
+      <button id="edit-redraft-btn" onclick="saveAndRedraft()">Save &amp; Redraft Email</button>
+    </div>
+    <div id="edit-status"></div>
+  </div>
+</div>
+
+<!-- Setup Modal -->
+<div id="setup-modal-overlay" onclick="closeSetupModal(event)">
+  <div id="setup-modal">
+    <button id="setup-modal-close" onclick="closeSetupModal()">&times;</button>
+    <h2>Setup — Company Profile</h2>
+    <p class="sub">Upload your company context file and Claude will auto-extract all fields. Then review and save.</p>
+
+    <div class="setup-section">
+      <div class="setup-section-title">Step 1 — Upload Context File</div>
+      <input type="file" id="setup-file-input" accept=".txt,.docx,.pdf" onchange="onSetupFileSelected()" />
+      <div class="setup-upload-actions">
+        <button id="setup-upload-btn" onclick="uploadSetupFile()" disabled>Extract with AI</button>
+        <button id="setup-sample-btn" onclick="downloadSample()">Download Sample Format</button>
+      </div>
+      <div id="setup-upload-status"></div>
+    </div>
+
+    <div class="setup-section">
+      <div class="setup-section-title">Step 2 — Review &amp; Edit Fields</div>
+      <div class="setup-field"><div class="setup-label">Company Name</div><input class="setup-input" id="s-company-name" type="text" placeholder="e.g. Acme AI" /></div>
+      <div class="setup-field"><div class="setup-label">Founder / Sender Name</div><input class="setup-input" id="s-founder-name" type="text" placeholder="e.g. Jane Smith" /></div>
+      <div class="setup-field"><div class="setup-label">Founder Title</div><input class="setup-input" id="s-founder-title" type="text" placeholder="e.g. Founder &amp; CEO" /></div>
+      <div class="setup-field"><div class="setup-label">Company Website</div><input class="setup-input" id="s-company-website" type="text" placeholder="e.g. www.acmeai.com" /></div>
+      <div class="setup-field"><div class="setup-label">Contact Email</div><input class="setup-input" id="s-contact-email" type="email" placeholder="e.g. jane@acmeai.com" /></div>
+      <div class="setup-field"><div class="setup-label">Calendar / Booking URL</div><input class="setup-input" id="s-calendar-url" type="text" placeholder="e.g. cal.com/jane" /></div>
+      <div class="setup-field"><div class="setup-label">Company Pitch (2-4 sentences)</div><textarea class="setup-input" id="s-company-pitch" placeholder="What your company does and its value proposition..."></textarea></div>
+    </div>
+
+    <div class="setup-save-row">
+      <button id="setup-save-btn" onclick="saveSetupConfig()">Save Configuration</button>
+      <span id="setup-save-status"></span>
+    </div>
+  </div>
+</div>
+
 <!-- Modal -->
 <div id="modal-overlay" onclick="closeModal(event)">
   <div id="modal">
@@ -517,19 +819,33 @@
       const canSend = (status === "drafted") && lead.decision_maker_email && lead.draft_email;
       const alreadySent = ["sent","opened","replied"].includes(status);
 
+      const editBtn = !alreadySent
+        ? `<br><button class="edit-btn" onclick="openEditModal(${lead.id})">Edit / Redraft</button>`
+        : "";
+      const addDmBtn = `<button class="add-dm-btn" onclick="openAddDmModal(${lead.id})">+ Add 2nd DM</button>`;
+      const deleteBtn = `<button class="delete-btn" onclick="deleteLead(${lead.id})">&#x1F5D1; Delete</button>`;
+
       const actionCell = canSend
-        ? `<button class="send-btn" onclick="openModal(${lead.id})">Review &amp; Send</button>`
+        ? `<button class="send-btn" onclick="openModal(${lead.id})">Review &amp; Send</button>${editBtn}${addDmBtn}${deleteBtn}`
         : alreadySent
-          ? `<span class="sent-label">&#10003; Sent</span>`
-          : `<span style="color:var(--text-muted);font-size:12px;">—</span>`;
+          ? `<span class="sent-label">&#10003; Sent</span>${addDmBtn}${deleteBtn}`
+          : `<span style="color:var(--text-muted);font-size:12px;">—</span>${editBtn}${addDmBtn}${deleteBtn}`;
 
       const snippet = escHtml(lead.job_description || "").substring(0, 160);
       const keywords = escHtml(lead.tech_keywords || "—");
       const emailPreview = escHtml((lead.draft_email || "—").substring(0, 180));
 
+      const size = lead.company_size || inferSize(lead);
+      const sizeBadge = size === "small"
+        ? `<span class="size-badge size-small">&#9733; Startup</span>`
+        : size === "mid"
+          ? `<span class="size-badge size-mid">&#9733; SMB</span>`
+          : "";
+
       return `<tr>
         <td style="color:var(--text-muted);font-size:12px;">${i + 1}</td>
-        <td class="company-cell">${escHtml(lead.company_name || "—")}<br>
+        <td class="company-cell">
+          ${escHtml(lead.company_name || "—")}${sizeBadge}<br>
           <span style="font-size:11px;color:var(--text-muted);font-weight:400;">${escHtml(lead.decision_maker_email || "")}</span>
         </td>
         <td style="font-size:12px;">${escHtml(lead.job_title || "—")}</td>
@@ -642,8 +958,14 @@
   // Auto-refresh every 60 seconds
   setInterval(loadAll, 60000);
 
-  // Initial load
+  // Initial load + populate header from saved config
   loadAll();
+  fetch("/api/config").then(r => r.json()).then(cc => {
+    if (cc && cc.company_name) {
+      document.getElementById("header-title").textContent = cc.company_name + " — Lead Pipeline";
+      document.title = cc.company_name + " — Lead Pipeline";
+    }
+  }).catch(() => {});
 
   // ---- Bulk Send ----
   let bulkPollTimer = null;
@@ -725,6 +1047,289 @@
     if (!bulkPollTimer) bulkPollTimer = setInterval(pollBulkStatus, 3000);
   }
 
+  // ---- Company Size Classification ----
+
+  function inferSize(lead) {
+    // Keyword fallback when AI classification not yet stored
+    const text = [lead.company_description, lead.job_description, lead.tech_keywords]
+      .filter(Boolean).join(" ").toLowerCase();
+
+    if (/fortune\s*500|publicly\s*trad|global\s*corporation|10[,.]000.{0,5}employees|50[,.]000/.test(text)) return "large";
+
+    const empMatch = text.match(/(\d[\d,]*)\+?\s*employees/);
+    if (empMatch) {
+      const n = parseInt(empMatch[1].replace(/,/g, ""));
+      if (n > 2000) return "large";
+      if (n >= 200) return "mid";
+      if (n > 0) return "small";
+    }
+
+    if (/\b(startup|early.stage|seed\s*stage|series\s*a\b|pre.series|bootstrapped|small\s*team|founding\s*team)\b/.test(text)) return "small";
+    if (/\b(series\s*[bcd]\b|scale.?up|mid.?market|smb)\b/.test(text)) return "mid";
+    return "";
+  }
+
+  let classifyPollTimer = null;
+
+  async function startClassify() {
+    const btn = document.getElementById("classify-btn");
+    btn.disabled = true;
+    btn.textContent = "Classifying...";
+    try {
+      const res = await fetch("/api/classify-sizes/start", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(data.error || "Failed to start", "error");
+        btn.disabled = false;
+        btn.textContent = "★ Classify Sizes";
+        return;
+      }
+      showToast("AI classification started...", "success");
+      classifyPollTimer = setInterval(pollClassifyStatus, 3000);
+    } catch (e) {
+      showToast("Error: " + e.message, "error");
+      btn.disabled = false;
+      btn.textContent = "★ Classify Sizes";
+    }
+  }
+
+  async function pollClassifyStatus() {
+    try {
+      const res = await fetch("/api/classify-sizes/status");
+      const s = await res.json();
+      const btn = document.getElementById("classify-btn");
+      if (s.total > 0) {
+        btn.textContent = "Classifying " + s.done + "/" + s.total + "...";
+      }
+      if (!s.running) {
+        clearInterval(classifyPollTimer);
+        classifyPollTimer = null;
+        btn.disabled = false;
+        btn.textContent = "★ Classify Sizes";
+        showToast("Classification done! " + s.done + " companies classified.", "success");
+        await loadAll();
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  // ---- Add 2nd DM Modal ----
+  let addDmLeadId = null;
+
+  function openAddDmModal(leadId) {
+    const lead = allLeads.find(l => l.id === leadId);
+    if (!lead) return;
+    addDmLeadId = leadId;
+    document.getElementById("adddm-modal-title").textContent = "Add 2nd DM — " + (lead.company_name || "Lead");
+    document.getElementById("adddm-name").value = "";
+    document.getElementById("adddm-title").value = "";
+    document.getElementById("adddm-email").value = "";
+    document.getElementById("adddm-status").textContent = "";
+    document.getElementById("adddm-add-btn").disabled = false;
+    document.getElementById("adddm-add-btn").textContent = "Clone & Draft Email";
+    document.getElementById("adddm-modal-overlay").classList.add("open");
+  }
+
+  function closeAddDmModal(e) {
+    if (e && e.target !== document.getElementById("adddm-modal-overlay")) return;
+    document.getElementById("adddm-modal-overlay").classList.remove("open");
+    addDmLeadId = null;
+  }
+
+  async function submitAddDm() {
+    if (!addDmLeadId) return;
+    const email = document.getElementById("adddm-email").value.trim();
+    if (!email) {
+      document.getElementById("adddm-status").textContent = "Email is required.";
+      document.getElementById("adddm-status").style.color = "var(--red)";
+      return;
+    }
+
+    const btn = document.getElementById("adddm-add-btn");
+    const statusEl = document.getElementById("adddm-status");
+    btn.disabled = true;
+    btn.textContent = "Creating & Drafting...";
+    statusEl.textContent = "Cloning lead and generating email with Claude...";
+    statusEl.style.color = "var(--text-muted)";
+
+    try {
+      const res = await fetch("/api/leads/" + addDmLeadId + "/clone", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          dm_name:  document.getElementById("adddm-name").value.trim(),
+          dm_title: document.getElementById("adddm-title").value.trim(),
+          dm_email: email,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        statusEl.textContent = "Done! New lead created (ID " + data.new_id + ") and drafted.";
+        statusEl.style.color = "var(--green)";
+        btn.textContent = "Clone & Draft Email";
+        btn.disabled = false;
+        await loadAll();
+      } else {
+        statusEl.textContent = "Error: " + (data.error || "Unknown");
+        statusEl.style.color = "var(--red)";
+        btn.disabled = false;
+        btn.textContent = "Clone & Draft Email";
+      }
+    } catch (e) {
+      statusEl.textContent = "Network error: " + e.message;
+      statusEl.style.color = "var(--red)";
+      btn.disabled = false;
+      btn.textContent = "Clone & Draft Email";
+    }
+  }
+
+  // ---- Edit Modal ----
+  let editLeadId = null;
+
+  function openEditModal(leadId) {
+    const lead = allLeads.find(l => l.id === leadId);
+    if (!lead) return;
+    editLeadId = leadId;
+
+    document.getElementById("edit-modal-title").textContent = "Edit — " + (lead.company_name || "Lead");
+    document.getElementById("edit-dm-name").value    = lead.decision_maker_name  || "";
+    document.getElementById("edit-dm-title").value   = lead.decision_maker_title || "";
+    document.getElementById("edit-dm-email").value   = lead.decision_maker_email || "";
+    document.getElementById("edit-industry").value   = lead.company_industry     || "";
+    document.getElementById("edit-description").value = lead.company_description || "";
+    document.getElementById("edit-status").textContent = "";
+    document.getElementById("edit-redraft-btn").disabled = false;
+    document.getElementById("edit-redraft-btn").textContent = "Save & Redraft Email";
+    document.getElementById("edit-modal-overlay").classList.add("open");
+  }
+
+  function closeEditModal(e) {
+    if (e && e.target !== document.getElementById("edit-modal-overlay")) return;
+    document.getElementById("edit-modal-overlay").classList.remove("open");
+    editLeadId = null;
+  }
+
+  function getEditFields() {
+    return {
+      decision_maker_name:  document.getElementById("edit-dm-name").value.trim(),
+      decision_maker_title: document.getElementById("edit-dm-title").value.trim(),
+      decision_maker_email: document.getElementById("edit-dm-email").value.trim(),
+      company_industry:     document.getElementById("edit-industry").value.trim(),
+      company_description:  document.getElementById("edit-description").value.trim(),
+    };
+  }
+
+  async function saveEdit() {
+    if (!editLeadId) return;
+    const statusEl = document.getElementById("edit-status");
+    statusEl.textContent = "Saving...";
+    statusEl.style.color = "var(--text-muted)";
+
+    try {
+      const res = await fetch("/api/leads/" + editLeadId + "/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(getEditFields()),
+      });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        statusEl.textContent = "Saved!";
+        statusEl.style.color = "var(--green)";
+        await loadAll();
+      } else {
+        statusEl.textContent = "Error: " + (data.error || "Unknown");
+        statusEl.style.color = "var(--red)";
+      }
+    } catch (e) {
+      statusEl.textContent = "Network error: " + e.message;
+      statusEl.style.color = "var(--red)";
+    }
+  }
+
+  async function saveAndRedraft() {
+    if (!editLeadId) return;
+    const statusEl = document.getElementById("edit-status");
+    const btn = document.getElementById("edit-redraft-btn");
+    btn.disabled = true;
+    btn.textContent = "Saving...";
+    statusEl.textContent = "";
+
+    // First save the edits
+    try {
+      const saveRes = await fetch("/api/leads/" + editLeadId + "/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(getEditFields()),
+      });
+      const saveData = await saveRes.json();
+      if (!saveRes.ok || !saveData.ok) {
+        statusEl.textContent = "Save failed: " + (saveData.error || "Unknown");
+        statusEl.style.color = "var(--red)";
+        btn.disabled = false;
+        btn.textContent = "Save & Redraft Email";
+        return;
+      }
+    } catch (e) {
+      statusEl.textContent = "Network error: " + e.message;
+      statusEl.style.color = "var(--red)";
+      btn.disabled = false;
+      btn.textContent = "Save & Redraft Email";
+      return;
+    }
+
+    // Then redraft
+    btn.textContent = "Drafting with AI...";
+    statusEl.textContent = "Generating email with Claude (may take 30-60s)...";
+    statusEl.style.color = "var(--text-muted)";
+
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 90000);
+      const res = await fetch("/api/leads/" + editLeadId + "/redraft", { method: "POST", signal: controller.signal });
+      clearTimeout(timer);
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        statusEl.textContent = "Done! New email drafted.";
+        statusEl.style.color = "var(--green)";
+        btn.textContent = "Save & Redraft Email";
+        btn.disabled = false;
+        await loadAll();
+      } else {
+        statusEl.textContent = "Redraft failed: " + (data.error || "Unknown");
+        statusEl.style.color = "var(--red)";
+        btn.disabled = false;
+        btn.textContent = "Save & Redraft Email";
+      }
+    } catch (e) {
+      if (e.name === "AbortError") {
+        statusEl.textContent = "Timed out (90s). Check server logs or try again.";
+      } else {
+        statusEl.textContent = "Network error - is the server running? " + e.message;
+      }
+      statusEl.style.color = "var(--red)";
+      btn.disabled = false;
+      btn.textContent = "Save & Redraft Email";
+    }
+  }
+
+  // ---- Delete Lead ----
+  async function deleteLead(leadId) {
+    const lead = allLeads.find(l => l.id === leadId);
+    const companyName = lead ? (lead.company_name || "this lead") : "this lead";
+    if (!confirm("Delete " + companyName + "?\nThis cannot be undone.")) return;
+    try {
+      const res = await fetch("/api/leads/" + leadId + "/delete", { method: "POST" });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        showToast(companyName + " deleted.", "success");
+        await loadAll();
+      } else {
+        showToast("Delete failed: " + (data.error || "Unknown"), "error");
+      }
+    } catch (e) {
+      showToast("Network error: " + e.message, "error");
+    }
+  }
+
   function updateBulkUI(s) {
     const total = s.total || 1;
     const pct = Math.round(((s.sent + s.failed) / total) * 100);
@@ -736,6 +1341,131 @@
     if (s.errors && s.errors.length) {
       document.getElementById("bulk-errors").textContent = s.errors.join("\n");
     }
+  }
+
+  // ---- Setup Modal ----
+  async function openSetupModal() {
+    document.getElementById("setup-file-input").value = "";
+    document.getElementById("setup-upload-btn").disabled = true;
+    document.getElementById("setup-upload-status").textContent = "";
+    document.getElementById("setup-save-status").textContent = "";
+    document.getElementById("setup-modal-overlay").classList.add("open");
+
+    // Load current config into fields
+    try {
+      const res = await fetch("/api/config");
+      if (res.ok) {
+        const cc = await res.json();
+        _fillSetupFields(cc);
+      }
+    } catch (_) {}
+  }
+
+  function closeSetupModal(e) {
+    if (e && e.target !== document.getElementById("setup-modal-overlay")) return;
+    document.getElementById("setup-modal-overlay").classList.remove("open");
+  }
+
+  function _fillSetupFields(cc) {
+    document.getElementById("s-company-name").value    = cc.company_name    || "";
+    document.getElementById("s-founder-name").value   = cc.founder_name    || "";
+    document.getElementById("s-founder-title").value  = cc.founder_title   || "";
+    document.getElementById("s-company-website").value= cc.company_website || "";
+    document.getElementById("s-contact-email").value  = cc.contact_email   || "";
+    document.getElementById("s-calendar-url").value   = cc.calendar_url    || "";
+    document.getElementById("s-company-pitch").value  = cc.company_pitch   || "";
+
+    // Update header title if company name present
+    if (cc.company_name) {
+      document.getElementById("header-title").textContent = cc.company_name + " — Lead Pipeline";
+      document.title = cc.company_name + " — Lead Pipeline";
+    }
+  }
+
+  function onSetupFileSelected() {
+    const file = document.getElementById("setup-file-input").files[0];
+    document.getElementById("setup-upload-btn").disabled = !file;
+    document.getElementById("setup-upload-status").textContent = file ? file.name + " selected" : "";
+    document.getElementById("setup-upload-status").style.color = "var(--text-muted)";
+  }
+
+  async function uploadSetupFile() {
+    const file = document.getElementById("setup-file-input").files[0];
+    if (!file) return;
+
+    const btn = document.getElementById("setup-upload-btn");
+    const statusEl = document.getElementById("setup-upload-status");
+    btn.disabled = true;
+    statusEl.textContent = "Extracting fields with AI... this may take 10-20 seconds.";
+    statusEl.style.color = "var(--text-muted)";
+
+    const form = new FormData();
+    form.append("file", file);
+
+    try {
+      const res = await fetch("/api/config/upload", { method: "POST", body: form });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        _fillSetupFields(data.config);
+        statusEl.textContent = "Fields extracted! Review below and click Save.";
+        statusEl.style.color = "var(--green)";
+      } else {
+        statusEl.textContent = "Error: " + (data.error || "Unknown");
+        statusEl.style.color = "var(--red)";
+      }
+    } catch (e) {
+      statusEl.textContent = "Network error: " + e.message;
+      statusEl.style.color = "var(--red)";
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function saveSetupConfig() {
+    const btn = document.getElementById("setup-save-btn");
+    const statusEl = document.getElementById("setup-save-status");
+    btn.disabled = true;
+    statusEl.textContent = "Saving...";
+    statusEl.style.color = "var(--text-muted)";
+
+    const payload = {
+      company_name:    document.getElementById("s-company-name").value.trim(),
+      founder_name:    document.getElementById("s-founder-name").value.trim(),
+      founder_title:   document.getElementById("s-founder-title").value.trim(),
+      company_website: document.getElementById("s-company-website").value.trim(),
+      contact_email:   document.getElementById("s-contact-email").value.trim(),
+      calendar_url:    document.getElementById("s-calendar-url").value.trim(),
+      company_pitch:   document.getElementById("s-company-pitch").value.trim(),
+    };
+
+    try {
+      const res = await fetch("/api/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        statusEl.textContent = "Saved! All future emails will use this company profile.";
+        statusEl.style.color = "var(--green)";
+        if (payload.company_name) {
+          document.getElementById("header-title").textContent = payload.company_name + " — Lead Pipeline";
+          document.title = payload.company_name + " — Lead Pipeline";
+        }
+      } else {
+        statusEl.textContent = "Error: " + (data.error || "Unknown");
+        statusEl.style.color = "var(--red)";
+      }
+    } catch (e) {
+      statusEl.textContent = "Network error: " + e.message;
+      statusEl.style.color = "var(--red)";
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function downloadSample() {
+    window.location.href = "/api/config/sample";
   }
 </script>
 </body>

@@ -1,8 +1,24 @@
+venv/
 venv
-node_modules
+node_modules/
 .env
+
+# Generated data — never commit
 leads.db
+*.xlsx
+*.sql
 leads_export.csv
+apollo_*.csv
+raw_leads.csv
+manual_contacts.csv
+new_leads.xlsx
+
+# User-specific config — never commit
+company_brief.txt
+company_config.json
+linkedin_state.json
+
+# Python cache
 __pycache__/
 *.pyc
-venv/
+*.pyo

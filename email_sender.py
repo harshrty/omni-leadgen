@@ -9,6 +9,7 @@ Strategy:
 """
 import smtplib
 import ssl
+import time
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formatdate, make_msgid
@@ -20,7 +21,7 @@ from config import (
 from db import mark_sent
 
 
-SIGNATURE = "\n\nOmnithrive"
+SIGNATURE = ""
 
 
 def _build_ghost_html(plain_body: str, lead_id: int) -> str:
@@ -65,7 +66,7 @@ def send_email(lead: dict) -> str:
     msg["To"] = to_email
     msg["Date"] = formatdate(localtime=True)
 
-    message_id = make_msgid(domain=FROM_EMAIL.split("@")[-1] if "@" in FROM_EMAIL else "omnithrivetech.com")
+    message_id = make_msgid(domain=FROM_EMAIL.split("@")[-1] if "@" in FROM_EMAIL else "localhost")
     msg["Message-ID"] = message_id
 
     # Order matters: email clients prefer the LAST alternative they can render.
@@ -78,11 +79,35 @@ def send_email(lead: dict) -> str:
     msg.attach(part_html)
 
     context = ssl.create_default_context()
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-        server.ehlo()
-        server.starttls(context=context)
-        server.login(SMTP_USER, SMTP_PASS)
-        server.sendmail(FROM_EMAIL, [to_email], msg.as_string())
+    last_err = None
+    for attempt in range(1, 4):
+        try:
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+                server.ehlo()
+                server.starttls(context=context)
+                server.login(SMTP_USER, SMTP_PASS)
+                server.sendmail(FROM_EMAIL, [to_email], msg.as_string())
+            break
+        except (smtplib.SMTPAuthenticationError, smtplib.SMTPRecipientsRefused,
+                smtplib.SMTPSenderRefused, smtplib.SMTPDataError) as e:
+            # Non-retryable — auth/recipient errors won't resolve on retry
+            raise RuntimeError("SMTP permanent error: " + str(e)) from e
+        except (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError,
+                ConnectionError, OSError) as e:
+            last_err = e
+            if attempt < 3:
+                time.sleep(2 ** attempt)
+    else:
+        raise RuntimeError("SMTP failed after 3 attempts: " + str(last_err))
 
-    mark_sent(lead["id"], message_id)
+    try:
+        mark_sent(lead["id"], message_id)
+    except Exception as db_err:
+        # Email already sent — log the DB failure but don't raise,
+        # otherwise the caller sees a failure and may retry sending.
+        import logging
+        logging.getLogger(__name__).error(
+            "mark_sent failed for lead_id=%s (email WAS sent): %s",
+            lead.get("id"), db_err
+        )
     return message_id
