@@ -1,0 +1,6 @@
+ddgs>=9.0.0
+dnspython>=2.4.0
+aiosmtplib>=3.0.0
+pandas>=2.0.0
+colorama>=0.4.6
+tqdm>=4.66.0
