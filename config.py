@@ -113,6 +113,12 @@ IMAP_PASS = os.getenv("IMAP_PASS", SMTP_PASS)
 LINKEDIN_EMAIL = os.getenv("LINKEDIN_EMAIL", "")
 LINKEDIN_PASS  = os.getenv("LINKEDIN_PASS", "")
 
+# --- Scraper tuning ---
+MAX_DESC_PER_RUN = int(os.getenv("MAX_DESC_PER_RUN", "150"))
+
+# --- Notifications ---
+SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "")
+
 # --- Dashboard Server ---
 SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
 SERVER_PORT = int(os.getenv("SERVER_PORT", "5000"))

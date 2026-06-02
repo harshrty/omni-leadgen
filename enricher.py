@@ -1,354 +1,148 @@
 """
-Waterfall Enricher - Smart skip + Hunter fallback.
+Enricher - find one decision maker email per company.
 
-Skips companies that already have complete data.
-Only uses Hunter credits on leads where free methods failed.
+Waterfall per company:
+  1. Hunter.io domain-search (executive first, then any named contact)
+  2. Email guessing (pattern generation + SMTP RCPT-TO verify) — fallback when Hunter finds nothing
+  3. Mark no_match if both fail
 
-Flow:
-  1. CHECK  -> skip if lead already has email + description + industry
-  2. DDG    -> find website + search snippets
-  3. SCRAPE -> crawl /about /team /leadership pages + meta tags
-  4. GROQ   -> extract decision maker from real scraped text
-  5. EMAIL  -> generate patterns + SMTP verify
-  6. HUNTER -> ONLY if still no email (paid credits, last resort)
-  7. GROQ   -> company description + industry from real data
+Parallel execution: ThreadPoolExecutor(max_workers=4) — 4x throughput vs sequential.
+HunterRotator is thread-safe via a Lock.
 """
-import re
-import time
-import json
+import logging
 import random
-import socket
-import smtplib
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import requests
-import dns.resolver
-from config import GROQ_API_KEY, GROQ_MODEL, TARGET_TITLES, HUNTER_API_KEYS
-from db import get_connection, get_leads_by_status, update_lead, get_stats
-from keywords import extract_keywords_string
-from ai_providers import generate as ai_generate
+
+from config import HUNTER_API_KEYS
+from db import get_all_leads, update_lead, get_stats
+
+logger = logging.getLogger(__name__)
+_print_lock = threading.Lock()
+
+
+def _log(msg):
+    with _print_lock:
+        print(msg)
 
 
 # ============================================================
-#  HUNTER KEY ROTATOR
+#  HUNTER KEY ROTATOR  (thread-safe)
 # ============================================================
 class HunterRotator:
     def __init__(self, keys):
         self.keys = list(keys)
         self.exhausted = set()
         self.used = {k: 0 for k in keys}
+        self._lock = threading.Lock()
 
     def get_key(self):
-        for k in self.keys:
-            if k not in self.exhausted:
-                return k
+        with self._lock:
+            for k in self.keys:
+                if k not in self.exhausted:
+                    return k
         return None
 
     def mark_used(self, key):
-        self.used[key] += 1
+        with self._lock:
+            self.used[key] = self.used.get(key, 0) + 1
 
     def mark_exhausted(self, key):
-        self.exhausted.add(key)
+        with self._lock:
+            self.exhausted.add(key)
 
     def has_credits(self):
-        return bool(self.keys) and len(self.exhausted) < len(self.keys)
+        with self._lock:
+            return bool(self.keys) and len(self.exhausted) < len(self.keys)
 
     def summary(self):
         if not self.keys:
             return
-        total_used = sum(self.used.values())
-        if total_used == 0:
-            print("  Hunter: 0 credits used (not needed)")
-            return
-        print("  --- Hunter Credits ---")
+        total = sum(self.used.values())
+        print("  Hunter credits used this run: " + str(total))
         for i, k in enumerate(self.keys):
             label = k[:8] + "..." + k[-4:]
             status = "EXHAUSTED" if k in self.exhausted else "active"
-            print("    Key " + str(i + 1) + " (" + label + "): " + str(self.used[k]) + " used [" + status + "]")
+            print("    Key " + str(i + 1) + " (" + label + "): " + str(self.used.get(k, 0)) + " used [" + status + "]")
 
 
 hunter = HunterRotator(HUNTER_API_KEYS)
 
 
 # ============================================================
-#  HELPERS
+#  DOMAIN HELPERS
 # ============================================================
-def extract_emails_from_text(text):
-    pattern = r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}"
-    emails = re.findall(pattern, text)
-    skip = [
-        "example.com", "email.com", "domain.com", "yourcompany",
-        "sentry.io", "webpack", "babel", ".png", ".jpg", ".gif",
-        "wixpress", "schema.org", "noreply", "no-reply",
-        "unsubscribe", "mailer-daemon", "postmaster",
-    ]
-    cleaned = []
-    for e in emails:
-        e_lower = e.lower()
-        if not any(s in e_lower for s in skip) and len(e) < 60:
-            cleaned.append(e)
-    return list(set(cleaned))
+_SKIP_DOMAINS = {
+    "google.", "linkedin.", "facebook.", "twitter.", "youtube.",
+    "wikipedia.", "instagram.", "glassdoor.", "indeed.", "yelp.",
+    "bloomberg.", "crunchbase.", "x.com", "tiktok.", "duckduckgo.",
+    "amazon.", "reddit.", "github.", "lever.co", "greenhouse.io",
+    "workday.com", "ashbyhq.com", "jobs.",
+}
 
 
-def extract_domain_from_url(url):
+def extract_domain(url):
     if not url:
         return ""
     url = url.lower().strip()
-    for prefix in ["https://", "http://", "www."]:
+    for prefix in ("https://", "http://", "www."):
         if url.startswith(prefix):
             url = url[len(prefix):]
     return url.split("/")[0].split("?")[0]
 
 
-def is_lead_complete(lead):
-    """Check if a lead already has all required info."""
-    has_email = bool((lead.get("decision_maker_email") or "").strip())
-    has_desc = bool((lead.get("company_description") or "").strip())
-    has_industry = bool((lead.get("company_industry") or "").strip())
-    has_keywords = bool((lead.get("tech_keywords") or "").strip())
-    return has_email and has_desc and has_industry and has_keywords
-
-
-# ============================================================
-#  STEP 1: DUCKDUCKGO - Find website + snippets
-# ============================================================
-def find_company_website(company_name):
-    from scrapling.fetchers import StealthyFetcher
-    from urllib.parse import unquote, quote_plus
-
-    try:
-        query = quote_plus(company_name + " official website")
-        url = "https://html.duckduckgo.com/html/?q=" + query
-        response = StealthyFetcher.fetch(url, headless=True, disable_resources=True)
-
-        if response.status != 200:
-            return "", ""
-
-        links = response.css("a.result__a")
-        snippets = response.css("a.result__snippet")
-        snippet_texts = []
-        for s in snippets[:5]:
-            try:
-                txt = ""
-                if hasattr(s, "text") and s.text:
-                    txt = s.text.strip()
-                if not txt and hasattr(s, "get_all_text"):
-                    txt = (s.get_all_text() or "").strip()
-                if txt and len(txt) > 20:
-                    snippet_texts.append(txt)
-            except Exception:
-                continue
-        ddg_snippets = " | ".join(snippet_texts[:3])
-
-        skip_domains = [
-            "google.", "linkedin.", "facebook.", "twitter.", "youtube.",
-            "wikipedia.", "instagram.", "glassdoor.", "indeed.", "yelp.",
-            "bloomberg.", "crunchbase.", "x.com", "tiktok.", "duckduckgo.",
-            "amazon.", "reddit.", "github.",
-        ]
-
-        for link in links[:5]:
-            try:
-                href = link.attrib.get("href", "")
-                if "uddg=" in href:
-                    encoded = href.split("uddg=")[1].split("&")[0]
-                    actual = unquote(encoded)
-                elif href.startswith("http"):
-                    actual = href
-                else:
-                    continue
-                if not any(s in actual.lower() for s in skip_domains):
-                    return actual, ddg_snippets
-            except Exception:
-                continue
-
-        return "", ddg_snippets
-
-    except Exception as e:
-        print(" DDG error: " + str(e)[:60])
-        return "", ""
-
-
-# ============================================================
-#  STEP 2: SCRAPLING - Scrape website pages
-# ============================================================
-def scrape_company_pages(website_url):
-    from scrapling.fetchers import StealthyFetcher
-
-    all_text = ""
-    all_emails = []
-    meta_descriptions = []
-
-    base = website_url.rstrip("/")
-    if not base.startswith("http"):
-        base = "https://" + base
-
-    pages = [
-        base, base + "/about", base + "/about-us",
-        base + "/contact", base + "/contact-us",
-        base + "/team", base + "/our-team", base + "/leadership",
-    ]
-
-    for page_url in pages:
+def find_domain(company_name, retries=3):
+    """DDG text search with exponential backoff retry."""
+    from ddgs import DDGS
+    for attempt in range(retries):
         try:
-            response = StealthyFetcher.fetch(
-                page_url, headless=True, disable_resources=True,
-            )
-            if response.status == 200:
-                for sel in ['meta[name="description"]', 'meta[property="og:description"]']:
-                    try:
-                        meta = response.css_first(sel)
-                        if meta:
-                            content = meta.attrib.get("content", "").strip()
-                            if content and len(content) > 20 and content not in meta_descriptions:
-                                meta_descriptions.append(content)
-                    except Exception:
-                        pass
-                try:
-                    page_text = response.get_all_text() or ""
-                except Exception:
-                    page_text = ""
-                if page_text:
-                    all_text += page_text + "\n"
-                    all_emails.extend(extract_emails_from_text(page_text))
-            time.sleep(random.uniform(1.5, 3))
-        except Exception:
-            continue
-
-    return {
-        "text": all_text[:5000],
-        "emails": list(set(all_emails))[:10],
-        "meta_descriptions": meta_descriptions,
-    }
+            results = DDGS().text(company_name + " official website", max_results=6)
+            for r in results:
+                domain = extract_domain(r.get("href", ""))
+                if domain and not any(s in domain for s in _SKIP_DOMAINS):
+                    return domain
+            return ""
+        except Exception as e:
+            if attempt < retries - 1:
+                wait = (2 ** attempt) + random.uniform(0.5, 1.5)
+                logger.warning("DDG retry %d/%d for '%s': %s — waiting %.1fs",
+                               attempt + 1, retries, company_name, str(e)[:50], wait)
+                time.sleep(wait)
+            else:
+                logger.error("DDG failed for '%s': %s", company_name, str(e)[:60])
+    return ""
 
 
 # ============================================================
-#  STEP 3: GROQ - Extract decision maker from scraped text
-# ============================================================
-def groq_extract_dm(company_name, site_text, emails_found):
-    emails_str = ", ".join(emails_found[:10]) if emails_found else "none"
-    prompt = (
-        "I scraped the website of '" + company_name + "'. "
-        "Find the best senior person (CTO, CEO, Founder, VP Engineering, Head of AI, etc).\n\n"
-        "WEBSITE TEXT:\n" + (site_text[:2500] if site_text else "(none)") + "\n\n"
-        "EMAILS FOUND: " + emails_str + "\n\n"
-        "ONLY use names you can see in the text. Do NOT invent names.\n"
-        "If you see a name + title, return them.\n"
-        "If only emails visible, return the best one.\n"
-        "If nothing useful, return empty strings.\n\n"
-        "Respond ONLY in JSON:\n"
-        '{"first_name": "", "last_name": "", "title": "", "email": ""}'
-    )
-    try:
-        raw = ai_generate(prompt, max_tokens=200,
-                          system="Extract real people from website text. Never invent. JSON only.")
-        if not raw:
-            return None
-        m = re.search(r'\{[^{}]*\}', raw, re.DOTALL)
-        if not m:
-            return None
-        result = json.loads(m.group(0))
-        first = result.get("first_name", "").strip()
-        last = result.get("last_name", "").strip()
-        if first or result.get("email", "").strip():
-            return {
-                "first_name": first,
-                "last_name": last,
-                "full_name": (first + " " + last).strip(),
-                "title": result.get("title", "").strip(),
-                "email": result.get("email", "").strip(),
-            }
-        return None
-    except Exception as e:
-        print(" err:" + str(e)[:40])
-        return None
-
-
-# ============================================================
-#  STEP 4: EMAIL PATTERNS + STEP 5: SMTP VERIFY
-# ============================================================
-def generate_email_patterns(first_name, last_name, domain):
-    if not first_name or not domain:
-        return []
-    first = first_name.lower().strip()
-    last = last_name.lower().strip() if last_name else ""
-    if last:
-        return [
-            first + "@" + domain,
-            first + "." + last + "@" + domain,
-            first[0] + last + "@" + domain,
-            first + last + "@" + domain,
-            first[0] + "." + last + "@" + domain,
-            last + "." + first + "@" + domain,
-            first + "_" + last + "@" + domain,
-            first + last[0] + "@" + domain,
-        ]
-    return [first + "@" + domain]
-
-
-def get_mx_record(domain):
-    try:
-        records = dns.resolver.resolve(domain, "MX")
-        mx = sorted(records, key=lambda r: r.preference)[0]
-        return str(mx.exchange).rstrip(".")
-    except Exception:
-        return None
-
-
-def verify_email_smtp(email, mx_host):
-    try:
-        smtp = smtplib.SMTP(timeout=10)
-        smtp.connect(mx_host, 25)
-        smtp.helo("verify.client.com")
-        smtp.mail("check@verify.com")
-        code, _ = smtp.rcpt(email)
-        smtp.quit()
-        if code == 250:
-            return True
-        elif code in (550, 551, 553):
-            return False
-        return None
-    except Exception:
-        return None
-
-
-def find_valid_email(patterns, domain):
-    if not patterns:
-        return "", "none"
-    mx_host = get_mx_record(domain)
-    if not mx_host:
-        return patterns[0], "pattern_guess"
-    for email in patterns:
-        result = verify_email_smtp(email, mx_host)
-        if result is True:
-            return email, "smtp_verified"
-        time.sleep(0.5)
-    return patterns[0], "pattern_guess"
-
-
-# ============================================================
-#  STEP 6: HUNTER.IO (only for leads still missing email)
+#  HUNTER SEARCH
 # ============================================================
 def hunter_search(domain):
+    """
+    1 credit per company. Returns best available contact dict or None.
+    Priority: Hunter-tagged executive → any named personal email.
+    """
     key = hunter.get_key()
     if not key:
         return None
 
-    try:
-        resp = requests.get(
+    def _fetch(api_key):
+        return requests.get(
             "https://api.hunter.io/v2/domain-search",
-            params={"domain": domain, "api_key": key, "limit": 10},
+            params={"domain": domain, "api_key": api_key, "limit": 10},
             timeout=30,
         )
+
+    try:
+        resp = _fetch(key)
         if resp.status_code in (402, 429):
             hunter.mark_exhausted(key)
-            next_key = hunter.get_key()
-            if not next_key:
+            key = hunter.get_key()
+            if not key:
                 return None
-            resp = requests.get(
-                "https://api.hunter.io/v2/domain-search",
-                params={"domain": domain, "api_key": next_key, "limit": 10},
-                timeout=30,
-            )
-            key = next_key
+            resp = _fetch(key)
             if resp.status_code in (402, 429):
                 hunter.mark_exhausted(key)
                 return None
@@ -357,368 +151,205 @@ def hunter_search(domain):
             return None
 
         hunter.mark_used(key)
-        data = resp.json().get("data", {})
-        emails_list = data.get("emails", [])
-        if not emails_list:
-            return None
+        emails = resp.json().get("data", {}).get("emails", [])
 
-        senior_words = [
-            "cto", "ceo", "founder", "co-founder", "vp", "vice president",
-            "head", "director", "chief", "partner", "owner",
-        ]
-        best = None
+        executive = None
         fallback = None
 
-        for person in emails_list:
-            email = person.get("value", "")
+        for person in emails:
+            email = (person.get("value") or "").strip()
             if not email or person.get("type") == "generic":
                 continue
-            first = person.get("first_name", "") or ""
-            last = person.get("last_name", "") or ""
-            name = (first + " " + last).strip()
-            position = person.get("position", "") or ""
-            seniority = person.get("seniority", "") or ""
+            first = (person.get("first_name") or "").strip()
+            last = (person.get("last_name") or "").strip()
+            name = (first + " " + last).strip() or first
+            if not name:
+                continue
 
-            entry = {"name": name, "title": position, "email": email,
-                     "linkedin": person.get("linkedin", "") or ""}
+            result = {
+                "name":     name,
+                "first":    first,
+                "last":     last,
+                "title":    (person.get("position") or "").strip(),
+                "email":    email,
+                "linkedin": person.get("linkedin") or "",
+            }
 
-            is_senior = seniority in ("executive", "senior", "c-level")
-            if not is_senior:
-                for sw in senior_words:
-                    if sw in position.lower():
-                        is_senior = True
-                        break
-            if is_senior and name:
-                return entry
-            if name and not fallback:
-                fallback = entry
+            if executive is None and (person.get("seniority") or "").lower() == "executive":
+                executive = result
+            if fallback is None:
+                fallback = result
 
-        return best or fallback
+        return executive or fallback
+
     except Exception as e:
-        print(" err:" + str(e)[:40])
+        logger.error("Hunter error for %s: %s", domain, str(e)[:60])
         return None
 
 
-
 # ============================================================
-#  STEP 7: COMPANY INFO FROM REAL DATA
+#  MAIN ENRICHER — single lead
 # ============================================================
-def extract_company_info(company_name, site_text="", job_description="",
-                         job_title="", meta_descriptions=None, ddg_snippets=""):
-    parts = []
-    if meta_descriptions:
-        parts.append("Meta descriptions:\n" + "\n".join(meta_descriptions[:3]))
-    if ddg_snippets:
-        parts.append("Search snippets:\n" + ddg_snippets)
-    if site_text:
-        parts.append("Website text:\n" + site_text[:1500])
-    if job_description:
-        parts.append("Job posting:\n" + job_description[:500])
-    if not parts:
-        return "", ""
+def enrich_lead(lead):
+    """
+    Process one lead. Returns: 'enriched' | 'no_domain' | 'no_exec' | 'no_credits'
+    """
+    company = (lead.get("company_name") or "").strip()
+    if not company:
+        update_lead(lead["id"], status="no_match")
+        return "no_domain"
 
-    context = "\n\n".join(parts)
-    prompt = (
-        "From the real data below about '" + company_name + "', give:\n"
-        "1. Brief 1-2 sentence description of what they do\n"
-        "2. Industry (e.g. FinTech, Healthcare, SaaS, Cybersecurity, AI/ML, etc.)\n\n"
-        "ONLY use info from data below.\n\n"
-        "--- DATA ---\n" + context + "\n--- END ---\n\n"
-        'Respond ONLY in JSON: {"description": "...", "industry": "..."}'
-    )
-    try:
-        raw = ai_generate(prompt, max_tokens=200, system="Extract company info. JSON only.")
-        if not raw:
-            return "", ""
-        m = re.search(r'\{[^{}]*\}', raw, re.DOTALL)
-        if not m:
-            return "", ""
-        result = json.loads(m.group(0))
-        return result.get("description", ""), result.get("industry", "")
-    except Exception as e:
-        print("    [Info] err:" + str(e)[:40])
-        return "", ""
+    # ── Domain resolution ──────────────────────────────────────
+    domain = (lead.get("company_domain") or "").strip()
+    if not domain:
+        website = (lead.get("company_website") or "").strip()
+        if website:
+            domain = extract_domain(website)
+    if not domain:
+        domain = find_domain(company)
 
+    if not domain:
+        _log("    [" + company + "] no domain found → no_match")
+        update_lead(lead["id"], status="no_match")
+        return "no_domain"
 
-# ============================================================
-#  EMAIL HELPERS
-# ============================================================
-def classify_email(email):
-    generic = ["info@", "contact@", "hello@", "support@", "admin@",
-               "sales@", "help@", "team@", "office@", "hr@", "jobs@",
-               "careers@", "press@", "media@", "enquiries@"]
-    for p in generic:
-        if email.lower().startswith(p):
-            return "generic"
-    return "personal"
+    # ── Hunter ────────────────────────────────────────────────
+    if not hunter.has_credits():
+        return "no_credits"
 
+    result = hunter_search(domain)
 
-def pick_best_email(emails, company_domain):
-    personal, generic, other = [], [], []
-    for email in emails:
-        domain = email.split("@")[1].lower() if "@" in email else ""
-        etype = classify_email(email)
-        if company_domain and company_domain in domain:
-            (personal if etype == "personal" else generic).append(email)
-        else:
-            other.append(email)
-    if personal:
-        return personal[0], "personal"
-    if generic:
-        return generic[0], "generic"
-    if other:
-        return other[0], "other"
-    return "", "none"
-
-
-# ============================================================
-#  MAIN ENRICHER
-# ============================================================
-def enrich_lead(lead, seen_companies):
-    company = lead["company_name"]
-    company_key = company.lower().strip()
-
-    # CHECK: Already complete? Skip instantly.
-    if is_lead_complete(lead):
-        return "already_complete"
-
-    # Check cache from this run
-    if company_key in seen_companies:
-        cached = seen_companies[company_key]
-        if cached:
-            update_lead(lead["id"], **cached, status="enriched")
-            return "cached_hit"
-        else:
-            # Even cached miss - check if we need desc/industry
-            if not lead.get("company_description"):
-                update_lead(lead["id"], status="no_match")
-            return "cached_miss"
-
-    print("  --- " + company + " ---")
-
-    # Check what's already in DB for this lead
-    existing_website = lead.get("company_website", "") or ""
-    existing_domain = lead.get("company_domain", "") or ""
-    existing_email = lead.get("decision_maker_email", "") or ""
-    existing_desc = lead.get("company_description", "") or ""
-    need_email = not existing_email
-    need_desc = not existing_desc
-
-    # ---- STEP 1: Find website (skip if already have it) ----
-    website = existing_website
-    domain = existing_domain
-    ddg_snippets = ""
-
-    if not website:
-        print("    [DDG] Searching...", end="")
-        website, ddg_snippets = find_company_website(company)
-        if not website:
-            print(" no website")
-            # Still extract keywords from job title + description
-            kw_text = " ".join(filter(None, [
-                lead.get("job_title", ""), lead.get("job_description", ""),
-            ]))
-            tech_kw = extract_keywords_string(kw_text)
-            save_fields = {"tech_keywords": tech_kw}
-            if ddg_snippets and need_desc:
-                desc, industry = extract_company_info(
-                    company, ddg_snippets=ddg_snippets,
-                    job_description=lead.get("job_description", ""),
-                    job_title=lead.get("job_title", ""),
-                )
-                if desc:
-                    save_fields["company_description"] = desc
-                    save_fields["company_industry"] = industry
-            update_lead(lead["id"], **save_fields, status="no_match")
-            seen_companies[company_key] = None
-            return "no_match"
-        domain = extract_domain_from_url(website)
-        print(" " + domain)
-    else:
-        if not domain:
-            domain = extract_domain_from_url(website)
-        print("    [Cached] " + domain)
-
-    # ---- STEP 2: Scrape website ----
-    print("    [Scrape] Crawling...", end="")
-    pages = scrape_company_pages(website)
-    site_text = pages["text"]
-    scraped_emails = pages["emails"]
-    meta_descs = pages["meta_descriptions"]
-    print(" " + str(len(scraped_emails)) + " emails")
-
-    dm_name = lead.get("decision_maker_name", "") or ""
-    dm_title = lead.get("decision_maker_title", "") or ""
-    dm_email = existing_email
-    dm_linkedin = lead.get("decision_maker_linkedin", "") or ""
-
-    if need_email:
-        # ---- STEP 3: AI chain — extract decision maker ----
-        print("    [AI] Finding DM...", end="")
-        dm = groq_extract_dm(company, site_text, scraped_emails)
-
-        if dm:
-            dm_name = dm.get("full_name", "") or dm_name
-            dm_title = dm.get("title", "") or dm_title
-            if dm.get("email"):
-                dm_email = dm["email"]
-                print(" " + dm_name + " - " + dm_email)
-            elif dm.get("first_name"):
-                print(" " + dm_name + " (no email yet)")
-                # ---- STEP 4+5: Email patterns + SMTP ----
-                print("    [SMTP] Verifying...", end="")
-                patterns = generate_email_patterns(dm["first_name"], dm.get("last_name", ""), domain)
-                if patterns:
-                    dm_email, src = find_valid_email(patterns, domain)
-                    if dm_email:
-                        print(" " + dm_email + " (" + src + ")")
-                    else:
-                        print(" none verified")
-            else:
-                print(" no person found")
-        else:
-            print(" nothing found")
-            # Fallback: best scraped email
-            if scraped_emails:
-                best, etype = pick_best_email(scraped_emails, domain)
-                if best and etype == "personal":
-                    dm_email = best
-                    print("    [Fallback] " + dm_email)
-
-        # ---- STEP 6: HUNTER (only if STILL no email) ----
-        if not dm_email and domain and hunter.has_credits():
-            print("    [Hunter] Searching...", end="")
-            h_result = hunter_search(domain)
-            if h_result and h_result.get("email"):
-                dm_name = h_result.get("name", "") or dm_name
-                dm_title = h_result.get("title", "") or dm_title
-                dm_email = h_result["email"]
-                dm_linkedin = h_result.get("linkedin", "") or dm_linkedin
-                print(" FOUND: " + dm_name + " - " + dm_email)
-            else:
-                print(" no result")
-
-    # ---- STEP 7: Company description (only if missing) ----
-    desc = existing_desc
-    industry = lead.get("company_industry", "") or ""
-    if need_desc:
-        desc, industry = extract_company_info(
-            company, site_text, lead.get("job_description", ""),
-            lead.get("job_title", ""),
-            meta_descriptions=meta_descs, ddg_snippets=ddg_snippets,
+    if result:
+        _log("    [" + company + "] Hunter → " + result["name"] + " <" + result["email"] + ">")
+        update_lead(
+            lead["id"],
+            company_domain=domain,
+            decision_maker_name=result["name"],
+            decision_maker_title=result["title"],
+            decision_maker_email=result["email"],
+            decision_maker_linkedin=result["linkedin"],
+            status="enriched",
         )
-        if desc:
-            print("    [Info] " + industry)
-
-    # ---- EXTRACT TECH KEYWORDS ----
-    kw_text = " ".join(filter(None, [
-        lead.get("job_title", ""),
-        lead.get("job_description", ""),
-        site_text,
-    ]))
-    tech_kw = extract_keywords_string(kw_text)
-    if tech_kw:
-        kw_count = len(tech_kw.split(", "))
-        print("    [Keywords] " + str(kw_count) + " found")
-
-    # ---- SAVE ----
-    fields = {
-        "company_website": website,
-        "company_domain": domain,
-        "company_contact_email": ", ".join(scraped_emails[:3]),
-        "company_description": desc,
-        "company_industry": industry,
-        "decision_maker_name": dm_name,
-        "decision_maker_title": dm_title,
-        "decision_maker_email": dm_email,
-        "decision_maker_linkedin": dm_linkedin,
-        "tech_keywords": tech_kw,
-    }
-
-    if dm_email:
-        update_lead(lead["id"], **fields, status="enriched")
-        seen_companies[company_key] = fields
         return "enriched"
-    else:
-        update_lead(lead["id"], **fields, status="no_match")
-        seen_companies[company_key] = None
-        return "partial"
+
+    # ── Email guessing fallback ───────────────────────────────
+    # Hunter returned nothing — try pattern generation + SMTP verify
+    # We need a name to guess patterns. Use existing DM name in DB if set.
+    dm_name = (lead.get("decision_maker_name") or "").strip()
+    first, last = "", ""
+    if dm_name:
+        parts = dm_name.split()
+        first = parts[0] if parts else ""
+        last = parts[-1] if len(parts) > 1 else ""
+
+    if first and domain:
+        try:
+            from email_guesser import guess_and_verify
+            guessed_email, method = guess_and_verify(first, last, domain)
+            if guessed_email:
+                _log("    [" + company + "] Guessed (" + method + ") → " + guessed_email)
+                update_lead(
+                    lead["id"],
+                    company_domain=domain,
+                    decision_maker_email=guessed_email,
+                    status="enriched",
+                )
+                return "enriched"
+        except Exception as e:
+            logger.warning("Email guesser failed for %s: %s", company, str(e)[:60])
+
+    _log("    [" + company + "] no contact found → no_match")
+    update_lead(lead["id"], company_domain=domain, status="no_match")
+    return "no_exec"
 
 
 # ============================================================
-#  RUN ENRICHER - processes ALL leads, skips complete ones
+#  RUN ENRICHER  (parallel)
 # ============================================================
-def run_enricher():
+def run_enricher(max_workers=4):
     print("")
     print("=" * 60)
-    print("  ENRICHER (Smart Skip + Hunter Fallback)")
+    print("  ENRICHER — Hunter + email guessing | workers=" + str(max_workers))
     print("=" * 60)
     print("")
 
-    providers = ["DuckDuckGo", "Scrapling", "Groq", "SMTP Verify"]
-    if HUNTER_API_KEYS:
-        providers.append("Hunter.io (" + str(len(HUNTER_API_KEYS)) + " keys)")
-    print("  Providers: " + ", ".join(providers))
+    if not HUNTER_API_KEYS:
+        print("  WARNING: No HUNTER_API_KEY in .env — skipping Hunter, using email guessing only")
+
+    all_leads = get_all_leads()
+    needs_email = [
+        l for l in all_leads
+        if not (l.get("decision_maker_email") or "").strip()
+        and (l.get("status") or "") not in ("sent", "opened", "replied")
+    ]
+
+    # One representative lead per company
+    seen = {}
+    to_enrich = []
+    for l in needs_email:
+        key = (l.get("company_name") or "").lower().strip()
+        if key not in seen:
+            seen[key] = True
+            to_enrich.append(l)
+
+    total = len(to_enrich)
+    print("  Leads needing email: " + str(len(needs_email)))
+    print("  Unique companies:    " + str(total))
     print("")
 
-    # Get ALL leads, not just "scraped"
-    conn = get_connection()
-    rows = conn.execute(
-        "SELECT * FROM leads WHERE status != 'no_match' ORDER BY company_name"
-    ).fetchall()
-    conn.close()
-    all_leads = [dict(r) for r in rows]
-
-    if not all_leads:
-        print("No leads in database.")
-        return 0
-
-    # Count what we have
-    total = len(all_leads)
-    already_complete = sum(1 for l in all_leads if is_lead_complete(l))
-    need_work = total - already_complete
-
-    print("  Total leads: " + str(total) + " (no_match excluded)")
-    print("  Already complete (skipping): " + str(already_complete))
-    print("  Need enrichment: " + str(need_work))
-    print("")
-
-    if need_work == 0:
-        print("All leads are complete! Nothing to do.")
+    if not to_enrich:
+        print("  Nothing to do.")
         get_stats()
         return 0
 
     enriched = 0
-    partial = 0
-    no_match = 0
-    skipped = 0
-    seen_companies = {}
+    no_domain = 0
+    no_exec = 0
+    counter = [0]
+    counter_lock = threading.Lock()
+    stop_flag = threading.Event()
 
-    for lead in all_leads:
-        result = enrich_lead(lead, seen_companies)
+    def _process(lead):
+        if stop_flag.is_set():
+            return "skipped"
+        result = enrich_lead(lead)
+        with counter_lock:
+            counter[0] += 1
+            n = counter[0]
+        company = (lead.get("company_name") or "")[:40]
+        _log("[" + str(n) + "/" + str(total) + "] " + company + " → " + result)
+        if result == "no_credits":
+            stop_flag.set()
+        time.sleep(random.uniform(0.8, 2.0))
+        return result
 
-        if result == "already_complete":
-            skipped += 1
-        elif result in ("enriched", "cached_hit"):
-            enriched += 1
-        elif result == "partial":
-            partial += 1
-        elif result in ("no_match", "cached_miss"):
-            no_match += 1
-
-        if result not in ("already_complete", "cached_hit", "cached_miss"):
-            time.sleep(random.uniform(2, 4))
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_process, lead): lead for lead in to_enrich}
+            for fut in as_completed(futures):
+                try:
+                    res = fut.result()
+                    if res == "enriched":
+                        enriched += 1
+                    elif res == "no_domain":
+                        no_domain += 1
+                    elif res == "no_exec":
+                        no_exec += 1
+                    elif res == "no_credits":
+                        pass  # stop_flag already set
+                except Exception as e:
+                    logger.error("Enricher worker error: %s", e)
+    except KeyboardInterrupt:
+        print("\n  Stopped by user — all saved data is safe.")
 
     print("")
     print("=" * 60)
     print("  DONE:")
-    print("    Skipped (already complete): " + str(skipped))
-    print("    Newly enriched: " + str(enriched))
-    print("    Partial (no email): " + str(partial))
-    print("    No website: " + str(no_match))
+    print("    Enriched (email found): " + str(enriched))
+    print("    No domain found:        " + str(no_domain))
+    print("    No contact found:       " + str(no_exec))
     hunter.summary()
     print("=" * 60)
-
     get_stats()
     return enriched
 

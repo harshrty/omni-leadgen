@@ -1,7 +1,10 @@
 """
 LinkedIn Job Scraper - USA + Europe, past 72 hours only.
-Uses Scrapling StealthyFetcher for anti-detection.
-Pulls full job descriptions from detail pages.
+
+Two modes:
+  - Logged-in  (recommended): set LINKEDIN_EMAIL + LINKEDIN_PASS in .env
+    Uses a real LinkedIn session via Playwright. More data, fewer blocks.
+  - Anonymous fallback: uses Scrapling StealthyFetcher (no credentials needed).
 """
 import random
 import re
@@ -11,8 +14,19 @@ from urllib.parse import quote_plus
 from config import (
     SEARCH_QUERIES, SEARCH_LOCATIONS, TIME_FILTER,
     MAX_PAGES_PER_QUERY, MIN_DELAY, MAX_DELAY, MAX_LEADS_PER_RUN,
+    MAX_DESC_PER_RUN,
+    LINKEDIN_EMAIL, LINKEDIN_PASS,
 )
 from db import insert_lead, get_stats, get_existing_companies
+
+# Pre-warm scrapling's lazy imports before any threads start.
+# scrapling.fetchers uses lazy imports — concurrent first-access from threads
+# races the curl_cffi C-extension init and crashes with "No module named 'curl_cffi'".
+try:
+    from scrapling.fetchers import StealthyFetcher as _StealthyFetcher  # noqa: F401
+    del _StealthyFetcher
+except Exception:
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -20,35 +34,43 @@ from db import insert_lead, get_stats, get_existing_companies
 # ---------------------------------------------------------------------------
 _JAVA_RE = re.compile(r'\bjava\b', re.IGNORECASE)
 
-# Job title must contain at least one of these to be kept
-_AI_TITLE_MUST = [
-    "ai", "artificial intelligence", "machine learning", "ml engineer",
-    "deep learning", "nlp", "natural language", "computer vision",
-    "llm", "large language", "genai", "generative ai", "gen ai",
-    "neural", "mlops", "llmops", "agentic", "data scientist",
-    "data science", "prompt engineer", "ai research",
-]
+# Job title must match at least one of these (word-boundary regex to avoid
+# false positives like "spain" matching "ai" or "email" matching "ml")
+_AI_TITLE_PATTERNS = re.compile(
+    r'\b('
+    r'ai|a\.i\.|artificial intelligence'
+    r'|machine learning|ml engineer|ml researcher'
+    r'|deep learning|nlp|natural language'
+    r'|computer vision|llm|large language'
+    r'|genai|generative ai|gen ai'
+    r'|neural|mlops|llmops|agentic'
+    r'|data scientist|data science'
+    r'|prompt engineer|ai research'
+    r')\b',
+    re.IGNORECASE,
+)
 
 
 def is_relevant_job(title):
     """
     Return True only if the job title is genuinely AI/ML related
     AND does not reference Java (the language).
+    Uses word-boundary matching to avoid false positives like 'spain' → 'ai'.
+    Also rejects titles that are too long (likely scraped descriptions, not titles).
     """
-    if not title:
+    if not title or len(title) > 120:
         return False
     t = title.lower()
     # Hard-drop Java developer / Java engineer roles
     # But do NOT drop roles that mention JavaScript (a valid AI stack skill)
     if _JAVA_RE.search(t) and "javascript" not in t:
         return False
-    # Must contain at least one AI-related term
-    return any(kw in t for kw in _AI_TITLE_MUST)
+    return bool(_AI_TITLE_PATTERNS.search(title))
 
 
 def human_delay(min_s=None, max_s=None):
-    min_s = min_s or MIN_DELAY
-    max_s = max_s or MAX_DELAY
+    min_s = min_s if min_s is not None else MIN_DELAY
+    max_s = max_s if max_s is not None else MAX_DELAY
     time.sleep(random.uniform(min_s, max_s))
 
 
@@ -126,23 +148,32 @@ def extract_salary_from_text(text):
     return ""
 
 
-def scrape_job_description(job_url):
+def _parse_html(html: str, url: str = ""):
+    """Wrap raw HTML string in a Scrapling Adaptor for CSS selector use."""
+    from scrapling.parser import Adaptor
+    return Adaptor(html, url=url, auto_match=False)
+
+
+def scrape_job_description(job_url, session=None):
     """Fetch the full job description from a LinkedIn job detail page."""
     if not job_url:
         return ""
 
-    from scrapling.fetchers import StealthyFetcher
-
     try:
-        # Don't disable resources - LinkedIn needs JS to render descriptions
-        response = StealthyFetcher.fetch(
-            job_url,
-            headless=True,
-            disable_resources=False,
-        )
-
-        if response.status != 200:
-            return ""
+        if session:
+            html = session.fetch(job_url, wait_ms=3000)
+            if not html:
+                return ""
+            response = _parse_html(html, job_url)
+        else:
+            from scrapling.fetchers import StealthyFetcher
+            response = StealthyFetcher.fetch(
+                job_url,
+                headless=True,
+                disable_resources=False,
+            )
+            if response.status != 200:
+                return ""
 
         # Try multiple selectors for job description
         for selector in [
@@ -193,73 +224,117 @@ def scrape_job_description(job_url):
         return ""
 
 
-def scrape_linkedin_jobs(query, location):
-    """Scrape LinkedIn public job listings for a query+location combo."""
-    from scrapling.fetchers import StealthyFetcher
-
-    jobs = []
-
+def scrape_linkedin_jobs(query, location, session=None):
+    """
+    Generator: yields one job dict per relevant card found across all pages.
+    Yields immediately so callers can save each job to DB as it arrives —
+    stopping mid-run won't lose already-yielded jobs.
+    """
     for page in range(MAX_PAGES_PER_QUERY):
         start = page * 25
         url = build_linkedin_url(query, location, start, TIME_FILTER)
         print("    Page " + str(page + 1) + ": " + url[:90] + "...")
 
         try:
-            response = StealthyFetcher.fetch(
-                url,
-                headless=True,
-                disable_resources=True,
-            )
+            if session:
+                html = session.fetch(url, wait_ms=3000)
+                if not html:
+                    print("      Empty response, skipping.")
+                    human_delay()
+                    continue
+                response = _parse_html(html, url)
+            else:
+                from scrapling.fetchers import StealthyFetcher
+                response = StealthyFetcher.fetch(url, headless=True, disable_resources=True)
+                if response.status != 200:
+                    print("      Got status " + str(response.status) + ", skipping.")
+                    human_delay()
+                    continue
+                # Detect CAPTCHA / authwall (LinkedIn returns 200 for these)
+                page_text = response.get_all_text() or ""
+                if any(kw in page_text[:2000].lower() for kw in ["join now to see", "sign in to view", "authwall", "verify you're human"]):
+                    print("      Blocked by LinkedIn (authwall/CAPTCHA). Skipping.")
+                    human_delay()
+                    continue
 
-            if response.status != 200:
-                print("      Got status " + str(response.status) + ", skipping.")
-                human_delay()
-                continue
-
-            job_cards = response.css("div.base-card")
+            # Logged-in LinkedIn uses different card selectors than public view
+            job_cards = response.css("li.jobs-search-results__list-item")
+            if not job_cards:
+                job_cards = response.css("li[data-occludable-job-id]")
+            if not job_cards:
+                job_cards = response.css("li.scaffold-layout__list-item")
+            if not job_cards:
+                job_cards = response.css("div.base-card")
             if not job_cards:
                 job_cards = response.css("div.job-search-card")
 
             if not job_cards:
                 print("      No job cards found.")
-                break
+                continue  # try next page — LinkedIn sometimes returns empty mid-pagination
 
             print("      Found " + str(len(job_cards)) + " cards.")
 
             for card in job_cards:
                 try:
-                    company = get_text(card, "a.hidden-nested-link")
+                    # Company — logged-in view uses artdeco entity lockup
+                    company = get_text(card, ".artdeco-entity-lockup__subtitle span")
+                    if not company:
+                        company = get_text(card, ".job-card-container__company-name")
+                    if not company:
+                        company = get_text(card, "a.hidden-nested-link")
                     if not company:
                         company = get_text(card, "h4.base-search-card__subtitle")
                     if not company:
                         company = get_text(card, ".base-search-card__subtitle")
 
-                    title = get_text(card, "h3.base-search-card__title")
+                    # Title — logged-in view uses job-card-list__title--link
+                    title = get_attr(card, "a.job-card-list__title--link", "aria-label")
+                    if not title:
+                        title = get_text(card, "a.job-card-list__title--link strong")
+                    if not title:
+                        title = get_text(card, "a.job-card-list__title--link")
+                    if not title:
+                        title = get_text(card, ".job-card-list__title")
+                    if not title:
+                        title = get_text(card, "h3.base-search-card__title")
                     if not title:
                         title = get_text(card, "h3")
 
-                    job_url = get_attr(card, "a.base-card__full-link", "href")
+                    # URL — logged-in anchor has relative href, make absolute
+                    job_url = get_attr(card, "a.job-card-list__title--link", "href")
+                    if not job_url:
+                        job_url = get_attr(card, "a.job-card-list__title", "href")
+                    if not job_url:
+                        job_url = get_attr(card, "a.base-card__full-link", "href")
                     if not job_url:
                         job_url = get_attr(card, "a", "href")
+                    # Make relative URLs absolute, strip tracking params
+                    if job_url and job_url.startswith("/"):
+                        job_url = "https://www.linkedin.com" + job_url
+                    if job_url and "?" in job_url:
+                        job_url = job_url.split("?")[0]
 
-                    job_loc = get_text(card, "span.job-search-card__location")
+                    # Location
+                    job_loc = get_text(card, "ul.job-card-container__metadata-wrapper li span")
+                    if not job_loc:
+                        job_loc = get_text(card, ".job-card-container__metadata-item")
+                    if not job_loc:
+                        job_loc = get_text(card, "span.job-search-card__location")
                     if not job_loc:
                         job_loc = get_text(card, ".base-search-card__metadata")
 
-                    # Get posted date from time element
+                    # Posted date
                     posted = get_attr(card, "time", "datetime")
 
-                    # Get salary if shown on card
-                    salary = get_text(card, "span.job-search-card__salary-info")
+                    # Salary
+                    salary = get_text(card, ".job-card-container__salary-info")
+                    if not salary:
+                        salary = get_text(card, "span.job-search-card__salary-info")
                     if not salary:
                         salary = get_text(card, ".base-search-card__salary")
-                    if not salary:
-                        salary = get_text(card, ".job-search-card__salary")
 
-                    if company and title:
-                        if not is_relevant_job(title):
-                            continue  # drop Java / non-AI roles
-                        jobs.append({
+                    if company and title and is_relevant_job(title):
+                        yield {
                             "company_name": company,
                             "job_title": title,
                             "job_url": job_url,
@@ -267,7 +342,7 @@ def scrape_linkedin_jobs(query, location):
                             "job_posted_date": posted,
                             "job_description": "",
                             "salary": salary,
-                        })
+                        }
                 except Exception:
                     continue
 
@@ -276,14 +351,27 @@ def scrape_linkedin_jobs(query, location):
 
         human_delay()
 
-    return jobs
 
-
-def run_scraper():
+def run_scraper(force_anon=True):
     print("")
     print("=" * 60)
     print("  SCRAPER: AI jobs in USA + Europe (past 72 hours)")
     print("=" * 60)
+    print("")
+
+    # --- Session setup ---
+    # Anonymous by default. Pass --login flag to use LinkedIn credentials.
+    use_session = bool(LINKEDIN_EMAIL and LINKEDIN_PASS) and not force_anon
+    if use_session:
+        from linkedin_session import ensure_session, LinkedInSession
+        ok = ensure_session(LINKEDIN_EMAIL, LINKEDIN_PASS)
+        if not ok:
+            print("  ⚠ LinkedIn login failed. Falling back to anonymous mode.")
+            use_session = False
+        else:
+            print("  Mode: Logged-in (LinkedIn session active)")
+    if not use_session:
+        print("  Mode: Anonymous web scraping (no LinkedIn login)")
     print("")
 
     # Build all query+location combos and shuffle
@@ -305,83 +393,117 @@ def run_scraper():
     total_new = 0
     total_skip = 0
 
-    for i, (query, location) in enumerate(combos):
-        idx = str(i + 1) + "/" + str(total_combos)
-        print("[" + idx + "] " + query + " in " + location)
-        print("-" * 50)
+    # Open ONE browser session for the entire run (if logged in)
+    session_ctx = None
+    session = None
+    if use_session:
+        try:
+            session_ctx = LinkedInSession()
+            session = session_ctx.__enter__()
+        except Exception as e:
+            print("  ⚠ Failed to open browser session: " + str(e)[:60])
+            print("  Falling back to anonymous mode.")
+            session_ctx = None
+            session = None
 
-        jobs = scrape_linkedin_jobs(query, location)
+    try:
+        for i, (query, location) in enumerate(combos):
+            idx = str(i + 1) + "/" + str(total_combos)
+            print("[" + idx + "] " + query + " in " + location)
+            print("-" * 50)
 
-        for job in jobs:
-            if job["company_name"].strip().lower() in existing_companies:
-                total_skip += 1
-                continue
-            inserted = insert_lead(
-                company_name=job["company_name"],
-                job_title=job["job_title"],
-                job_description=job["job_description"],
-                job_url=job["job_url"],
-                job_location=job["job_location"],
-                job_posted_date=job["job_posted_date"],
-                salary=job.get("salary", ""),
-            )
-            if inserted:
-                total_new += 1
-                existing_companies.add(job["company_name"].strip().lower())
-                msg = "  + " + job["company_name"] + " -- " + job["job_title"]
-                if job["job_location"]:
-                    msg += " (" + job["job_location"] + ")"
-                sal = job.get("salary", "")
-                if sal:
-                    msg += " [" + sal + "]"
-                print(msg)
-            else:
-                total_skip += 1
+            # scrape_linkedin_jobs is a generator — each job is yielded and
+            # inserted immediately, so stopping mid-run never loses saved leads.
+            for job in scrape_linkedin_jobs(query, location, session=session):
+                if job["company_name"].strip().lower() in existing_companies:
+                    total_skip += 1
+                    continue
+                inserted = insert_lead(
+                    company_name=job["company_name"],
+                    job_title=job["job_title"],
+                    job_description=job["job_description"],
+                    job_url=job["job_url"],
+                    job_location=job["job_location"],
+                    job_posted_date=job["job_posted_date"],
+                    salary=job.get("salary", ""),
+                )
+                if inserted:
+                    total_new += 1
+                    existing_companies.add(job["company_name"].strip().lower())
+                    msg = "  + " + job["company_name"] + " -- " + job["job_title"]
+                    if job["job_location"]:
+                        msg += " (" + job["job_location"] + ")"
+                    sal = job.get("salary", "")
+                    if sal:
+                        msg += " [" + sal + "]"
+                    print(msg)
+                else:
+                    total_skip += 1
 
-        if total_new >= MAX_LEADS_PER_RUN:
-            print("Hit max leads limit (" + str(MAX_LEADS_PER_RUN) + "). Stopping.")
-            break
+            if total_new >= MAX_LEADS_PER_RUN:
+                print("Hit max leads limit (" + str(MAX_LEADS_PER_RUN) + "). Stopping.")
+                break
 
-        # Longer delay between different combos
-        if i < len(combos) - 1:
-            wait = random.uniform(6, 12)
-            print("  Waiting " + str(int(wait)) + "s...")
-            time.sleep(wait)
+            if i < len(combos) - 1:
+                wait = random.uniform(3, 7)
+                print("  Waiting " + str(int(wait)) + "s...")
+                time.sleep(wait)
+
+    except KeyboardInterrupt:
+        print("")
+        print("Stopped by user. All leads scraped so far have been saved to DB.")
+
+    finally:
+        if session_ctx:
+            try:
+                session_ctx.__exit__(None, None, None)
+            except Exception:
+                pass
 
     print("")
     print("Scraping complete: " + str(total_new) + " new, " + str(total_skip) + " skipped")
 
-    # Phase 2: Fetch job descriptions for new leads
+    # Phase 2: Fetch job descriptions (limited batch, sequential to avoid LinkedIn bans)
     from db import get_leads_by_status, update_lead
     scraped = get_leads_by_status("scraped")
-    leads_needing_desc = [l for l in scraped if not l.get("job_description")]
+    leads_needing_desc = [l for l in scraped if not l.get("job_description") and l.get("job_url")]
 
     if leads_needing_desc:
+        batch = leads_needing_desc[:MAX_DESC_PER_RUN]
+        remaining = len(leads_needing_desc) - len(batch)
         print("")
-        print("Fetching job descriptions for " + str(len(leads_needing_desc)) + " leads...")
+        print("Fetching job descriptions for " + str(len(batch)) + " leads"
+              + (" (" + str(remaining) + " remaining for next run)" if remaining > 0 else "")
+              + "...")
         desc_count = 0
-        for lead in leads_needing_desc:
-            url = lead.get("job_url", "")
-            if url:
-                print("  Fetching desc: " + lead["company_name"] + "...", end="")
-                desc = scrape_job_description(url)
-                if desc:
-                    fields = {"job_description": desc}
-                    # Extract salary from description if not already found
-                    if not (lead.get("salary") or "").strip():
-                        sal = extract_salary_from_text(desc)
-                        if sal:
-                            fields["salary"] = sal
-                            print(" OK (" + str(len(desc)) + " chars) [Salary: " + sal + "]")
-                        else:
-                            print(" OK (" + str(len(desc)) + " chars)")
+
+        for lead in batch:
+            desc = None
+            for attempt in range(2):  # 1 retry on transient failure
+                try:
+                    desc = scrape_job_description(lead["job_url"])
+                    break
+                except Exception as e:
+                    if attempt == 0:
+                        time.sleep(3)
                     else:
-                        print(" OK (" + str(len(desc)) + " chars)")
-                    update_lead(lead["id"], **fields)
-                    desc_count += 1
+                        print("  desc error: " + str(e)[:60])
+            if desc:
+                fields = {"job_description": desc}
+                sal = ""
+                if not (lead.get("salary") or "").strip():
+                    sal = extract_salary_from_text(desc)
+                if sal:
+                    fields["salary"] = sal
+                    print("  " + lead["company_name"] + ": OK (" + str(len(desc)) + " chars) [" + sal + "]")
                 else:
-                    print(" no description found")
-                human_delay(3, 7)
+                    print("  " + lead["company_name"] + ": OK (" + str(len(desc)) + " chars)")
+                update_lead(lead["id"], **fields)
+                desc_count += 1
+            else:
+                print("  " + lead["company_name"] + ": no description")
+            time.sleep(random.uniform(2, 4))  # rate limit
+
         print("Got descriptions for " + str(desc_count) + " leads.")
 
     get_stats()
@@ -389,4 +511,7 @@ def run_scraper():
 
 
 if __name__ == "__main__":
-    run_scraper()
+    import sys
+    # Default: anonymous mode. Pass --login to use LinkedIn credentials.
+    use_login = "--login" in sys.argv
+    run_scraper(force_anon=not use_login)

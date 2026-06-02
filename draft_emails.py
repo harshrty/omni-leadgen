@@ -5,14 +5,25 @@ Generates tailored cold emails positioning Omnithrive as an AI implementation an
 - Otherwise -> personalised to the company/context
 Saves draft_subject + draft_email back to DB, then re-exports Excel.
 """
+import logging
 import os
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from config import (
     ANTHROPIC_API_KEY, FOUNDER_NAME, FOUNDER_TITLE,
     COMPANY_NAME, COMPANY_WEBSITE, FROM_EMAIL,
 )
 from db import get_all_leads, update_lead
+
+logger = logging.getLogger(__name__)
+_print_lock = threading.Lock()
+
+
+def _log(msg):
+    with _print_lock:
+        print(msg)
 
 # ============================================================
 #  OMNITHRIVE CONTEXT — loaded from company_brief.txt if present
@@ -299,14 +310,27 @@ def generate_email(client, lead):
             job_description=jd_excerpt,
         )
 
-    message = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=1500,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    def _call_claude():
+        message = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1500,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return message.content[0].text.strip()
 
-    raw = message.content[0].text.strip()
-    email_body = ""
+    # Retry up to 3 times on empty / malformed response
+    raw = ""
+    for attempt in range(3):
+        try:
+            raw = _call_claude()
+            if raw:
+                break
+        except Exception as e:
+            if attempt < 2:
+                logger.warning("Claude attempt %d failed for %s: %s — retrying", attempt + 1, company, str(e)[:60])
+                time.sleep(1.5 ** attempt)
+            else:
+                raise
 
     lines = raw.split("\n")
     body_lines = []
@@ -318,18 +342,14 @@ def generate_email(client, lead):
         elif in_body:
             body_lines.append(line)
 
-    # If the response didn't include the EMAIL: marker, use the whole response
-    if not body_lines:
-        email_body = raw
-    else:
-        email_body = "\n".join(body_lines).strip()
+    email_body = "\n".join(body_lines).strip() if body_lines else raw
 
     subject = company + "'s Implementation partner for your Agentic AI projects"
 
     return sanitize_text(subject), sanitize_text(email_body)
 
 
-def run():
+def run(max_workers=5):
     if not ANTHROPIC_API_KEY:
         print("ERROR: ANTHROPIC_API_KEY not set in .env")
         return
@@ -337,7 +357,6 @@ def run():
     import anthropic
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-    # Get all leads, skip already sent/opened/replied
     all_leads = get_all_leads()
     candidates = [
         l for l in all_leads
@@ -345,7 +364,7 @@ def run():
         and (l.get("status") or "scraped") not in ("sent", "opened", "replied")
     ]
 
-    # Pick best row per company: score = DM name (3) + has JD (2) + has desc (1)
+    # Best row per company: DM name (3) + has JD (2) + has desc (1)
     best_per_company = {}
     for l in candidates:
         key = l["company_name"]
@@ -360,35 +379,51 @@ def run():
     rows = [v[1] for v in sorted(best_per_company.values(), key=lambda x: x[1]["company_name"])]
 
     if not rows:
-        print("No leads to regenerate (all sent or no email address).")
+        print("No leads to draft (all sent or no email address).")
         return
 
     total = len(rows)
-    print("Regenerating emails for " + str(total) + " leads (skipping sent/opened/replied)...\n")
+    print("Drafting emails for " + str(total) + " leads | workers=" + str(max_workers) + "\n")
 
     done = 0
     failed = 0
+    counter = [0]
+    counter_lock = threading.Lock()
 
-    for i, lead in enumerate(rows):
+    def _draft_one(lead):
         company = lead["company_name"]
         dm_name = (lead.get("decision_maker_name") or "").strip()
-        prefix = "[" + str(i + 1) + "/" + str(total) + "] " + company
-
         try:
             subject, body = generate_email(client, lead)
             if subject and body:
                 update_lead(lead["id"], draft_subject=subject, draft_email=body, status="drafted")
-                done += 1
                 dm_label = " -> " + dm_name if dm_name else " -> (no DM)"
-                print(prefix + dm_label)
+                with counter_lock:
+                    counter[0] += 1
+                    n = counter[0]
+                _log("[" + str(n) + "/" + str(total) + "] " + company + dm_label)
+                return True
             else:
-                failed += 1
-                print(prefix + " FAILED (empty response)")
+                _log("[FAIL] " + company + " — empty response")
+                return False
         except Exception as e:
-            failed += 1
-            print(prefix + " ERROR: " + str(e)[:60])
+            _log("[ERROR] " + company + " — " + str(e)[:60])
+            return False
 
-        time.sleep(0.5)
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_draft_one, lead): lead for lead in rows}
+            for fut in as_completed(futures):
+                try:
+                    if fut.result():
+                        done += 1
+                    else:
+                        failed += 1
+                except Exception as e:
+                    failed += 1
+                    logger.error("Draft worker error: %s", e)
+    except KeyboardInterrupt:
+        print("\nStopped by user — all completed drafts saved.")
 
     print("\nDone. Drafted: " + str(done) + " | Failed: " + str(failed))
 

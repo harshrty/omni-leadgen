@@ -17,11 +17,27 @@ import logging
 import threading
 import time
 
-from config import IMAP_HOST, IMAP_PORT, IMAP_USER, IMAP_PASS
+import requests
+from config import IMAP_HOST, IMAP_PORT, IMAP_USER, IMAP_PASS, SLACK_WEBHOOK_URL
 from db import get_lead_by_message_id, get_lead_by_email, mark_replied
 
 POLL_INTERVAL = 300  # seconds between inbox checks
 logger = logging.getLogger(__name__)
+
+
+def _notify_slack_reply(company: str, dm_name: str):
+    """Post a Slack notification when a reply is detected."""
+    if not SLACK_WEBHOOK_URL:
+        return
+    try:
+        name_part = (" from *" + dm_name + "*") if dm_name else ""
+        requests.post(
+            SLACK_WEBHOOK_URL,
+            json={"text": ":email: Reply received" + name_part + " at *" + company + "*!"},
+            timeout=5,
+        )
+    except Exception as e:
+        logger.warning("Slack notify failed: %s", e)
 
 
 def _get_header(msg, name: str) -> str:
@@ -79,19 +95,29 @@ def check_inbox_once():
                         break
 
                 # Strategy 2: match by sender email address
+                # Only use this fallback if the message looks like a reply
+                # (has In-Reply-To header OR subject starts with Re:)
+                # to avoid false-positives from cold emails to our inbox.
                 if not lead:
                     import re
-                    match = re.search(r"[\w.+-]+@[\w.-]+\.\w+", from_header)
-                    if match:
-                        sender_email = match.group(0).lower()
-                        lead = get_lead_by_email(sender_email)
+                    subject_header = _get_header(msg, "Subject")
+                    looks_like_reply = bool(in_reply_to) or subject_header.lower().startswith("re:")
+                    if looks_like_reply:
+                        match = re.search(r"[\w.+-]+@[\w.-]+\.\w+", from_header)
+                        if match:
+                            sender_email = match.group(0).lower()
+                            lead = get_lead_by_email(sender_email)
 
-                if lead and lead["status"] != "replied":
-                    mark_replied(lead["id"])
-                    logger.info(
-                        "Reply detected: lead_id=%d company=%s",
-                        lead["id"], lead.get("company_name", "")
-                    )
+                # Only count as a reply if the email was actually sent to us
+                if lead and lead["status"] in ("sent", "opened", "replied"):
+                    if lead["status"] != "replied":
+                        mark_replied(lead["id"])
+                        company = lead.get("company_name", "")
+                        dm = lead.get("decision_maker_name", "")
+                        logger.info("Reply detected: lead_id=%d company=%s", lead["id"], company)
+                        _notify_slack_reply(company, dm)
+                    # Mark as SEEN so we don't reprocess it next poll
+                    mail.store(num, '+FLAGS', '\\Seen')
 
             except Exception as e:
                 logger.error("Error processing message %s: %s", num, e)
