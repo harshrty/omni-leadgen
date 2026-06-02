@@ -125,6 +125,30 @@ TARGET_TITLES=CTO|CEO|Founder|VP of Engineering
 
 ---
 
+## Email Open Tracking — Hosting Required
+
+Open tracking works by embedding an invisible 1×1 pixel image in each sent email. When the recipient opens the email, their email client loads the image from your server — that load registers as an "open."
+
+**This only works if your server is publicly accessible on the internet.** When running locally (`localhost:5000`), the tracking pixel URL is not reachable from outside your machine, so opens will not be recorded.
+
+To enable tracking, deploy the server to a public host and set `BASE_URL` in your `.env`:
+
+```env
+BASE_URL=https://your-domain.com   # or your Railway / Render / VPS URL
+```
+
+**Free hosting options:**
+
+| Platform | Notes |
+|----------|-------|
+| [Railway](https://railway.app) | Free tier, `Procfile` already included — deploy in 2 minutes |
+| [Render](https://render.com) | Free tier, add a `render.yaml` |
+| Any VPS | DigitalOcean, Hetzner, etc. — run `python server.py` behind nginx |
+
+> **Reply tracking** (IMAP polling) works locally with no hosting needed — it connects outbound to your Gmail inbox and does not require a public URL.
+
+---
+
 ## Security Notes
 
 - Never commit `.env`, `company_config.json`, or `leads.db` — all are gitignored
