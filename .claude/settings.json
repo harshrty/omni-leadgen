@@ -1,0 +1,76 @@
+{
+  "mcpServers": {
+    "serena": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/oraios/serena",
+        "serena",
+        "start-mcp-server",
+        "--context",
+        "ide-assistant",
+        "--project-root",
+        "/home/harsh-singh/Projects/omni-leadgen"
+      ]
+    },
+    "vexp": {
+      "command": "/home/harsh-singh/.nvm/versions/node/v24.12.0/bin/node",
+      "args": [
+        "/home/harsh-singh/.vscode/extensions/vexp.vexp-vscode-2.0.24-linux-x64/dist/mcp-server.cjs"
+      ],
+      "env": {
+        "VEXP_WORKSPACE": "/home/harsh-singh/Projects/omni-leadgen"
+      }
+    }
+  },
+  "permissions": {
+    "allow": [
+      "Bash(python server.py)",
+      "Bash(python *.py)",
+      "Bash(python -c *)",
+      "Bash(git commit -m '*)",
+      "Bash(git add *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git status)",
+      "Bash(git push *)",
+      "Bash(git rm --cached *)",
+      "Bash(curl -s http://localhost:5000*)",
+      "Bash(kill *)",
+      "Bash(lsof -ti:5000*)",
+      "mcp__serena__find_symbol",
+      "mcp__serena__search_symbols_in_file",
+      "mcp__serena__get_symbols_overview",
+      "mcp__serena__list_dir",
+      "mcp__serena__read_file",
+      "mcp__serena__check_onboarding_performed",
+      "mcp__serena__onboard_project",
+      "mcp__serena__activate_project",
+      "mcp__vexp__run_pipeline",
+      "mcp__vexp__get_skeleton",
+      "mcp__vexp__index_status",
+      "mcp__vexp__expand_vexp_ref",
+      "mcp__code-review-graph__semantic_search_nodes_tool",
+      "mcp__code-review-graph__get_review_context_tool",
+      "mcp__code-review-graph__query_graph_tool",
+      "mcp__code-review-graph__detect_changes_tool",
+      "mcp__code-review-graph__get_impact_radius_tool",
+      "mcp__code-review-graph__get_affected_flows_tool",
+      "mcp__code-review-graph__get_architecture_overview_tool"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Grep|Glob|Regex",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/vexp-guard.sh",
+            "timeout": 3000
+          }
+        ]
+      }
+    ]
+  }
+}
